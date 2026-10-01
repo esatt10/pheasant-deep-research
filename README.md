@@ -259,7 +259,8 @@ one are equally disqualifying for a result somebody will publish.
 ## Running it against real Pheasant
 
 1. Start Pheasant and note its MCP endpoint.
-2. `cp .env.example .env` and fill in `PHEASANT_MCP_URL`, the model provider
+2. `cp .env.example .env` and fill in `PHEASANT_MCP_URL`, the matching
+   `PHEASANT_API_TOKEN` from the Pheasant server environment, the model provider
    and its key, and the tool names if your build renames any. For the `web` or
    `balanced` profile also set `BRAVE_SEARCH_API_KEY` and/or
    `TAVILY_API_KEY`; a configured provider without its key is a `doctor`

@@ -484,7 +484,7 @@ class PheasantFile(_Model):
     transport: Literal["streamable_http", "stdio", "mock"] = "streamable_http"
     url: str = ""
     command: str = ""
-    token_env: str = "PHEASANT_MCP_TOKEN"
+    token_env: str = "PHEASANT_API_TOKEN"
     protocol_version: str = "2026-07-28"
     timeout_seconds: float = 60.0
     connect_timeout_seconds: float = 10.0

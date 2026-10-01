@@ -39,7 +39,7 @@ def _offline_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
         "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY",
-        "PHEASANT_MCP_TOKEN",
+        "PHEASANT_API_TOKEN",
         "NCBI_API_KEY",
         "BRAVE_SEARCH_API_KEY",
         "TAVILY_API_KEY",

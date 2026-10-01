@@ -7,7 +7,7 @@
 transport: mock
 url: ""
 command: ""
-token_env: PHEASANT_MCP_TOKEN
+token_env: PHEASANT_API_TOKEN
 protocol_version: "2026-07-28"
 timeout_seconds: 30
 connect_timeout_seconds: 5

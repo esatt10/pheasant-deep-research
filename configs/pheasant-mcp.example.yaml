@@ -14,7 +14,7 @@
 transport: ${PHEASANT_MCP_TRANSPORT:-streamable_http}
 url: ${PHEASANT_MCP_URL:-http://127.0.0.1:8765/mcp}
 command: ${PHEASANT_MCP_COMMAND:-}
-token_env: PHEASANT_MCP_TOKEN
+token_env: PHEASANT_API_TOKEN
 protocol_version: "2026-07-28"
 timeout_seconds: 60
 connect_timeout_seconds: 10
