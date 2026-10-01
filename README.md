@@ -277,6 +277,26 @@ guessing. Heuristic name matching is off by default.
 The lab writes to a knowledge base and a source it owns. Use a namespace that
 holds nothing else: it submits documents and seals snapshots there.
 
+**What the region needs** (pheasant >= 0.12.6; checked against 0.12.16):
+
+* `readiness.enabled: true` — `submit_documents`, the receipts and snapshots
+  live on the readiness plane;
+* its state path allow-listed, e.g. `security.allow_workspace_roots: [/state,
+  …]`. Pheasant lands submitted documents under `<state>/uploads/<source>` and
+  leaves registering that directory to the caller; the lab registers it before
+  the first sync, and a region that refuses says so with this fix;
+* a `type: memory` source, for `P1`;
+* the API token in `PHEASANT_MCP_TOKEN` when `security.api_auth` is on.
+
+`deploy/compose/answers/pheasant-lab.json` in pheasant-kb sets all four.
+
+**One evaluation per sealed snapshot.** `P1` writes memory into the region,
+and in pheasant a memory record is an indexed artifact — so it moves the
+snapshot's `corpus`, `graph` and `retrieval` sections, not just `memory`. A
+second `evaluate` over the same run therefore has its pinned `P0` refused and
+fails its drift gate, naming those sections. That is the pin doing its job;
+start a new run (or a fresh region) to evaluate again.
+
 ---
 
 ## The offline demo, and what it does not measure

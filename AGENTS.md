@@ -79,12 +79,29 @@ uv run python scripts/export_schemas.py               # after changing a record 
   use Pheasant.
 - **Only `P0` is pinned to the sealed snapshot, and only where the region
   offers a pin.** A pinned search is answered from that state *or refused*,
-  and `P1`'s own treatment moves the snapshot's memory section. The snapshot
-  still guards `P1`/`P2`: the drift check fails the run if any section other
-  than `memory` moved. pheasant >= 0.12 exposes `snapshot_id` and a
-  corpus-level `as_of` on its HTTP surface and **not** on `search_context`, so
-  the shipped example config maps neither, `Retriever.supports_pinning` is
-  false there, and the run records a limitation saying `P0` ran unpinned.
+  and `P1`'s own treatment moves the snapshot. pheasant >= 0.12.6 accepts
+  `snapshot_id` and `as_of` on `search_context` (before that, HTTP only), so
+  the shipped example config maps both and `P0` is pinned; against an older
+  region, drop them from the map and `Retriever.supports_pinning` goes false
+  and the run records that `P0` ran unpinned. The drift check runs once,
+  before any arm, so it guards the freeze-to-evaluate gap. In pheasant a
+  memory record is an indexed artifact: a memory write moves `corpus`,
+  `graph` and `retrieval` too, never `memory` alone, so a second `evaluate`
+  after `P1` has seeded is refused - correctly.
+- **Pheasant's submission contract has three steps, and the lab owns two.**
+  `submit_documents` lands bytes in a directory and receipts them; the caller
+  registers that directory as a `document_folder` source (`Ingestor.register`,
+  which needs the region's state path allow-listed); a sync indexes it; and
+  `acknowledge_ingest` promotes receipts, answering with *counts* while the
+  receipts themselves are read back through `get_ingest_status`. On a fleet
+  the sync is published, so the barrier polls `still_accepted` rather than
+  trusting one call.
+- **A hit's text is a preview; the answerer reads documents.** Pheasant caps
+  a hit at a 500-character `text_preview`, and the lab's documents open with
+  front matter, so `Retriever.hydrate` reads each passage back whole through
+  `get_file_summary` and records `text_source`. The join from a hit to the
+  lab's source id is the receipts (`artifact_sources`), never
+  `provenance.source_id`, which is the *region's* source name.
 - **An argument absent from `argument_map` is one the lab does not send.**
   That is how a capability the region lacks is declared, and `doctor` checks
   every mapped name against the tool's advertised schema
@@ -137,9 +154,27 @@ uv run python scripts/export_schemas.py               # after changing a record 
   matcher; the leakage checker refused three questions per run, correctly.
 - **`ruff format` rewrites the lines your `sed` was aiming at.** Two test edits
   silently no-oped after a format pass and left an undefined name.
+- **A mock kinder than the server hid every adapter bug at once.** Until the
+  lab was first run end to end against a real pheasant (0.12.16), the mock had
+  auto-indexed unregistered submissions, returned receipts under `receipts`
+  rather than `accepted`/`rejected`, listed acknowledgements rather than
+  counting them, put the lab's source id in `provenance`, returned whole
+  passages, flattened the memory record and parsed a preference grammar
+  pheasant does not have. So a live `collect` died at its first sync; with
+  that fixed, every receipt read as `no_receipt`, acknowledging crashed, every
+  hit collapsed onto one source id, answerers read front matter, memory ids
+  were empty and every seeded preference was silently ignored. The mock now
+  mirrors captured wire shapes, and `tests/contract/test_pheasant_wire.py`
+  reads the captured payloads themselves (`tests/fixtures/pheasant/`) so the
+  next drift fails offline. Regenerate those fixtures against a new release.
+- **A sequence number taken under a lock and written after it is not
+  sequential.** `EventLog.emit` numbered events inside the lock and appended
+  outside it, so concurrent branches wrote 10 before 9 and `verify` reported a
+  discontinuity in a stream that had lost nothing - a replay test that failed
+  one run in eight.
 - **A mock that accepts an argument the real server rejects hides the bug it
   was built to expose.** The adapter mapped `snapshot_id` and `as_of` onto
-  `search_context`, which pheasant exposes on HTTP only. The mock accepted
+  `search_context`, which pheasant then exposed on HTTP only. The mock accepted
   both, so the demo, the contract tests and the drift-refusal test all passed
   while a live run would have failed at `P0`'s first search — or, worse,
   ignored the pin and looked pinned. Two fixes, because one was not enough:

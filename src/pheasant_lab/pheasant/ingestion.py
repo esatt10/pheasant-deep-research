@@ -9,6 +9,7 @@ records which spelling was used.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -18,9 +19,14 @@ from ..hashing import digest, digest_text
 from ..settings import PheasantFile
 from .capabilities import CapabilityMap
 from .client import PheasantClient
+from .protocol import McpToolError
 from .receipts import IngestReceipt, ReceiptLedger, parse_receipts
 
 MEDIA_TYPES = ("text/plain", "text/markdown", "application/pdf", "metadata-only")
+
+
+class RegistrationRefused(RuntimeError):
+    """The region stored a submission and will not index where it put it."""
 
 
 @dataclass
@@ -155,6 +161,12 @@ class Ingestor:
         self.tracer = tracer
         self._argument_map: dict[str, str] = dict(config.argument_map.get("ingest") or {})
         self._kb_field = str(config.argument_map.get("knowledge_base_field", "knowledge_base"))
+        #: Where the region says it put the submitted bytes. Pheasant lands a
+        #: submission in a directory and leaves registering that directory as
+        #: a source to the caller, so this is what `register` points it at.
+        self.landing_directory: str | None = None
+        self._registered = False
+        self._clock = time
 
     # -- submission --------------------------------------------------------
     def submit(
@@ -199,6 +211,8 @@ class Ingestor:
             stage="ingest",
         )
         payload = outcome.result.payload() if outcome.result else {}
+        if isinstance(payload, Mapping) and payload.get("directory"):
+            self.landing_directory = str(payload["directory"])
         receipts = parse_receipts(
             payload if isinstance(payload, Mapping | list) else [],
             run_id=self.run_id,
@@ -229,9 +243,62 @@ class Ingestor:
         return receipts
 
     # -- the index barrier -------------------------------------------------
+    def register(self) -> dict[str, Any]:
+        """Make the landing directory a source the region will index.
+
+        Pheasant's `submit_documents` persists bytes and receipts them, and
+        stops there: its landing directory becomes searchable only once
+        something registers it as an ordinary ``document_folder`` source,
+        which is what its own upload route and readiness probe do. Without
+        this the first sync is refused with "Unknown source" and nothing the
+        swarm collected is ever indexed.
+
+        Registration is an upsert of the same definition, so repeating it is
+        harmless; it is done once per process because a resumed run that
+        submitted nothing has no directory to name and was registered by the
+        run that did.
+        """
+
+        if self._registered:
+            return {"skipped": "already registered by this process"}
+        if not self.capabilities.has("register_source"):
+            return {"skipped": "no register_source capability configured"}
+        if not self.landing_directory:
+            return {"skipped": "nothing was submitted by this process"}
+        tool = self.capabilities.tool("register_source")
+        try:
+            outcome = self.client.call(
+                tool,
+                {
+                    self._kb_field: self.config.knowledge_base,
+                    "name": self.config.source_name,
+                    "source_type": "document_folder",
+                    "path": self.landing_directory,
+                    "description": "Documents submitted by pheasant-swarm-lab",
+                    # The submitted documents are the corpus. The region's
+                    # default include list is code-shaped, and an include that
+                    # quietly drops a submission is a silent loss nothing
+                    # downstream could attribute.
+                    "include": ["**/*"],
+                },
+                idempotent=True,
+                stage="index",
+            )
+        except McpToolError as exc:
+            raise RegistrationRefused(
+                f"the region accepted the submission into {self.landing_directory} but refused "
+                f"to register that directory as source '{self.config.source_name}': "
+                f"{exc.message}\nPheasant only registers paths under an allow-listed root; add "
+                "the region's `pheasant.state_path` (e.g. /state) to "
+                "`security.allow_workspace_roots` in its pheasant.yaml."
+            ) from exc
+        self._registered = True
+        return _as_mapping(outcome.result.payload() if outcome.result else {})
+
     def sync(self, *, mode: str = "incremental") -> dict[str, Any]:
         if not self.capabilities.has("sync"):
             return {"skipped": "no sync capability configured"}
+        self.register()
         outcome = self.client.call(
             self.capabilities.tool("sync"),
             {
@@ -244,11 +311,22 @@ class Ingestor:
         )
         return _as_mapping(outcome.result.payload() if outcome.result else {})
 
-    def acknowledge(self, submission_id: str | None = None) -> dict[str, Any]:
+    def acknowledge(
+        self, submission_id: str | None = None, *, wait_seconds: float | None = None
+    ) -> dict[str, Any]:
         """Cross the index barrier from what the region *holds*.
 
         Not from what a sync reported: a sync's summary is a claim about what
         it did, and this is a question about what the region has.
+
+        Pheasant answers with *counts* (``acknowledged``, ``still_accepted``)
+        and keeps the receipts behind ``get_ingest_status``, so the barrier is
+        crossed in two steps: ask the region to promote what it now holds,
+        then read each submission's receipts back. On a fleet the sync is
+        published to an indexer rather than run in the call, so
+        ``still_accepted`` can stay above zero for a while; the call polls up
+        to ``wait_seconds`` (default: the configured call timeout) and then
+        reports what is still outstanding rather than treating it as indexed.
         """
 
         if not self.capabilities.has("ingest_acknowledge"):
@@ -256,23 +334,73 @@ class Ingestor:
         arguments: dict[str, Any] = {self._kb_field: self.config.knowledge_base}
         if submission_id:
             arguments["submission_id"] = submission_id
-        outcome = self.client.call(
-            self.capabilities.tool("ingest_acknowledge"), arguments, idempotent=True, stage="index"
+        deadline = self._clock.monotonic() + (
+            self.config.timeout_seconds if wait_seconds is None else wait_seconds
         )
-        payload = _as_mapping(outcome.result.payload() if outcome.result else {})
-        for row in payload.get("receipts", []) or payload.get("acknowledged", []) or []:
-            if not isinstance(row, Mapping) or not row.get("idempotency_key"):
-                continue
-            key = str(row["idempotency_key"])
-            self.ledger.acknowledge(
-                key, status=str(row.get("status", "indexed")), artifact_id=row.get("artifact_id")
+        backoff = max(0.05, self.config.retry_backoff_seconds)
+        while True:
+            outcome = self.client.call(
+                self.capabilities.tool("ingest_acknowledge"),
+                arguments,
+                idempotent=True,
+                stage="index",
             )
-            receipt = self.ledger.get(key)
-            if receipt is not None and self.tracer is not None:
-                # Appended, not rewritten: the trace records that the barrier
-                # was crossed, and a reader folds the file by key.
-                self.tracer.append("ingest-receipts.jsonl", receipt.as_dict())
+            payload = _as_mapping(outcome.result.payload() if outcome.result else {})
+            # A region that lists what it acknowledged is read directly; one
+            # that counts it is read back through the receipts.
+            listed = [
+                row
+                for name in ("receipts", "acknowledged")
+                if isinstance(payload.get(name), list)
+                for row in payload[name]
+            ]
+            for row in listed:
+                self._fold(row)
+            if not listed:
+                self._refresh(submission_id)
+            pending = payload.get("still_accepted")
+            if not isinstance(pending, int) or pending <= 0:
+                break
+            if self._clock.monotonic() >= deadline:
+                payload["barrier"] = "timed_out"
+                break
+            self._clock.sleep(min(backoff, self.config.retry_backoff_max_seconds))
+            backoff *= 2
         return payload
+
+    def _refresh(self, submission_id: str | None) -> None:
+        """Read this process's receipts back from the region and fold them."""
+
+        if not self.capabilities.has("ingest_status"):
+            return
+        submissions = (
+            [submission_id]
+            if submission_id
+            else sorted({r.submission_id for r in self.ledger.receipts if r.submission_id})
+        )
+        for submission in submissions:
+            payload = self.ingest_status(submission_id=submission)
+            for row in payload.get("receipts") or []:
+                self._fold(row)
+
+    def _fold(self, row: Any) -> None:
+        if not isinstance(row, Mapping) or not row.get("idempotency_key"):
+            return
+        key = str(row["idempotency_key"])
+        receipt = self.ledger.get(key)
+        if receipt is None:
+            return
+        status = str(row.get("status") or row.get("disposition") or "indexed")
+        if status == receipt.status and (row.get("artifact_id") or None) in (
+            None,
+            receipt.artifact_id,
+        ):
+            return
+        self.ledger.acknowledge(key, status=status, artifact_id=row.get("artifact_id"))
+        if self.tracer is not None:
+            # Appended, not rewritten: the trace records that the barrier
+            # was crossed, and a reader folds the file by key.
+            self.tracer.append("ingest-receipts.jsonl", receipt.as_dict())
 
     def reconcile(self, submission_id: str | None = None) -> dict[str, Any]:
         """Submitted against held. ``silent_loss`` is the number to read."""

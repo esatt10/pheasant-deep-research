@@ -7,7 +7,8 @@
 # when a configured tool does not appear in tools/list, or when the local
 # adapter cannot satisfy the tool's advertised JSON Schema.
 #
-# The defaults match pheasant >= 0.12 (see its docs/mcp_tools.md).
+# The defaults match pheasant >= 0.12.6 (see its docs/mcp_tools.md), checked
+# end to end against 0.12.16.
 # ---------------------------------------------------------------------------
 
 transport: ${PHEASANT_MCP_TRANSPORT:-streamable_http}
@@ -40,12 +41,21 @@ capabilities:
   ingest_reconcile:
     tool: ${PHEASANT_TOOL_INGEST_RECONCILE:-reconcile_ingest}
     required: false
+  # Pheasant lands submitted documents in a directory and does not index it
+  # until that directory is registered as a source; the lab registers it
+  # before the first sync. The region must allow-list its state path
+  # (`security.allow_workspace_roots: [/state, ...]`) for this to be accepted.
+  register_source:
+    tool: ${PHEASANT_TOOL_REGISTER:-register_source}
+    required: true
   sync:
     tool: ${PHEASANT_TOOL_SYNC:-sync_source}
-    required: false
+    required: true
   search:
     tool: ${PHEASANT_TOOL_SEARCH:-search_context}
     required: true
+  # Reads a retrieved document back whole. A search hit carries a capped
+  # preview; without this the answering arms read previews only.
   fetch:
     tool: ${PHEASANT_TOOL_FETCH:-get_file_summary}
     required: false
@@ -75,13 +85,13 @@ discovery:
 # Changing a server's parameter names is a config edit, not a code change.
 #
 # A key that is ABSENT here is an argument the lab will not send. That is how
-# a capability the region does not offer is declared: pheasant >= 0.12 exposes
-# the snapshot pin and a corpus-level `as_of` on its HTTP surface and *not* on
-# `search_context`, so neither is mapped below and the lab uses the sealed
-# snapshot as a drift check rather than a pin. Mapping a name the tool does
-# not accept is worse than leaving it out: the run would look pinned and would
-# not be. `doctor` checks every mapped name against the tool's advertised
-# schema for exactly this reason.
+# a capability the region does not offer is declared. pheasant >= 0.12.6
+# accepts `snapshot_id` and `as_of` on `search_context` (before that they were
+# HTTP-only), so both are mapped and `P0` is pinned to the sealed snapshot: the
+# region answers from that state or refuses. Against an older region, delete
+# those two lines - mapping a name the tool does not accept is worse than
+# leaving it out, and `doctor` checks every mapped name against the tool's
+# advertised schema for exactly this reason.
 argument_map:
   knowledge_base_field: knowledge_base
   search:
@@ -95,6 +105,8 @@ argument_map:
     node_types: node_types
     min_score: min_score
     principal: principal
+    snapshot_id: snapshot_id
+    as_of: as_of
   ingest:
     documents: documents
     source_name: source_name

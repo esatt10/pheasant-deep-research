@@ -24,7 +24,8 @@ capabilities:
   ingest_status: { tool: get_ingest_status, required: true }
   ingest_acknowledge: { tool: acknowledge_ingest, required: false }
   ingest_reconcile: { tool: reconcile_ingest, required: false }
-  sync: { tool: sync_source, required: false }
+  register_source: { tool: register_source, required: true }
+  sync: { tool: sync_source, required: true }
   search: { tool: search_context, required: true }
   fetch: { tool: get_file_summary, required: false }
   write_memory: { tool: memory_write, required: false }

@@ -202,15 +202,18 @@ def test_an_empty_document_is_rejected_with_a_code(config, mock_server, tracer):
     ingestor = ingestor_for(config, mock_server, tracer)
     receipts = ingestor.submit([request_for("")])
     assert receipts[0].status == "rejected"
-    assert receipts[0].error_code == "EMPTY_DOCUMENT"
+    # Pheasant's code for it: an empty item is an invalid request, permanently.
+    assert receipts[0].error_code == "INVALID_REQUEST"
     assert receipts[0].retryable is False
+    assert receipts[0].error_message, "the region's reason travels with the receipt"
 
 
 def test_reconcile_reports_silent_loss_not_a_difference_of_totals(config, mock_server, tracer):
     ingestor = ingestor_for(config, mock_server, tracer)
     ingestor.submit([request_for("body one"), request_for("body two", "source-2")])
     ingestor.sync()
-    # One artifact disappears from the region while its receipt remains.
+    ingestor.acknowledge()
+    # One artifact disappears from the region while its receipt says indexed.
     mock_server.documents.pop(next(iter(mock_server.documents)))
     report = ingestor.reconcile()
     assert report["silent_loss"] == 1
@@ -283,7 +286,9 @@ def test_a_search_pinned_to_a_drifted_snapshot_is_refused(config, mock_server, t
 
     ingestor.submit([request_for("a second document", "source-2")])
     ingestor.sync()
-    with pytest.raises(McpToolError, match="SNAPSHOT_DRIFTED"):
+    # Pheasant's SNAPSHOT_DRIFTED refusal, as its text reads: the code itself
+    # is not in the message, only in the readiness contract's table.
+    with pytest.raises(McpToolError, match="no longer describes this region"):
         retriever.search(request)
 
 
@@ -291,9 +296,10 @@ def test_a_search_pinned_to_a_drifted_snapshot_is_refused(config, mock_server, t
 
 
 def test_the_pin_is_not_sent_when_the_region_declares_no_name_for_it(config):
-    """pheasant >= 0.12 exposes the snapshot pin on HTTP and not on MCP.
+    """A region whose search tool takes no pin gets no pin.
 
-    The lab must not send an argument the tool does not accept, and must not
+    Before 0.12.6 pheasant exposed the snapshot pin on HTTP and not on MCP,
+    and other regions may still. The lab must not send an argument the tool does not accept, and must not
     record a run as pinned when it was not: a run that looks pinned and is not
     is the one failure a sealed snapshot exists to prevent.
     """
@@ -349,22 +355,61 @@ def test_the_response_records_whether_the_pin_reached_the_region(config, mock_se
     assert response.as_record()["pin_sent"] is True
 
 
-def test_the_shipped_example_config_claims_no_pin_that_pheasant_lacks():
-    """A regression guard on the configuration itself.
-
-    `services/retrieval.SearchRequest` carries `snapshot_id` and `as_of`, and
-    pheasant's HTTP surface passes both — but `search_context` accepts
-    neither. Mapping them here would make every live run fail at P0's first
-    search, and the mock region accepts them, so no test that only exercises
-    the mock could see it.
-    """
-
+def _shipped_pheasant_file(environ: dict[str, str] | None = None):
     from pathlib import Path
 
     import yaml
 
+    from pheasant_lab.settings import PheasantFile, interpolate
+
     repo = Path(__file__).resolve().parents[2]
     body = yaml.safe_load((repo / "configs/pheasant-mcp.example.yaml").read_text())
-    search_map = (body.get("argument_map") or {}).get("search") or {}
-    assert "snapshot_id" not in search_map
-    assert "as_of" not in search_map
+    return PheasantFile.model_validate(interpolate(body, environ or {}, []))
+
+
+def _pheasant_tools(version: str = "0.12.16") -> dict:
+    import json
+    from pathlib import Path
+
+    fixture = Path(__file__).resolve().parents[1] / f"fixtures/pheasant/tools-{version}.json"
+    return json.loads(fixture.read_text())["tools"]
+
+
+def test_the_shipped_example_config_resolves_against_a_real_pheasant():
+    """A regression guard on the configuration itself, against the real thing.
+
+    The schemas are pheasant 0.12.16's own ``tools/list``, captured from a
+    running region rather than written down, so this fails when the shipped
+    map names a tool or an argument the region does not have - including a
+    pin it does not accept, which would make a run *look* pinned. The mock
+    cannot answer this: it accepts whatever it was written to accept.
+    """
+
+    from pheasant_lab.pheasant.capabilities import configured_arguments, resolve
+
+    config = _shipped_pheasant_file()
+    tools = _pheasant_tools()
+    capabilities = resolve(config, tools)
+    unusable = {r.name: r.reason for r in capabilities.resolutions.values() if not r.usable}
+    assert unusable == {}
+    # pheasant >= 0.12.6 takes the pin on `search_context`, so P0 is pinned.
+    search_arguments = set(tools["search_context"]["inputSchema"]["properties"])
+    assert {"snapshot_id", "as_of"} <= set(configured_arguments(config, "search"))
+    assert set(configured_arguments(config, "search")) <= search_arguments
+
+
+def test_a_pin_the_region_does_not_accept_is_refused_at_preflight():
+    """The same map against a region whose search tool has no pin (pre-0.12.6)."""
+
+    from pheasant_lab.pheasant.capabilities import resolve
+
+    tools = _pheasant_tools()
+    search = dict(tools["search_context"])
+    schema = dict(search["inputSchema"])
+    schema["properties"] = {
+        k: v for k, v in schema["properties"].items() if k not in {"snapshot_id", "as_of"}
+    }
+    search["inputSchema"] = schema
+    capabilities = resolve(_shipped_pheasant_file(), {**tools, "search_context": search})
+    assert capabilities.has("search") is False
+    assert "snapshot_id" in (capabilities.resolutions["search"].reason or "")

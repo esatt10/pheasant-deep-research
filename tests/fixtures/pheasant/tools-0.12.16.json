@@ -1,0 +1,857 @@
+{
+ "note": "tools/list entries for the tools the lab's capability map names, captured from a running pheasant. Regenerate against a new release rather than editing by hand.",
+ "server": {
+  "name": "pheasant",
+  "protocol_version": "2025-11-25",
+  "version": "0.12.16"
+ },
+ "tools": {
+  "acknowledge_ingest": {
+   "inputSchema": {
+    "properties": {
+     "knowledge_base": {
+      "title": "Knowledge Base",
+      "type": "string"
+     },
+     "submission_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Submission Id"
+     }
+    },
+    "required": [
+     "knowledge_base"
+    ],
+    "title": "acknowledge_ingestArguments",
+    "type": "object"
+   },
+   "name": "acknowledge_ingest"
+  },
+  "describe_retrieval": {
+   "inputSchema": {
+    "properties": {
+     "knowledge_base": {
+      "title": "Knowledge Base",
+      "type": "string"
+     }
+    },
+    "required": [
+     "knowledge_base"
+    ],
+    "title": "describe_retrievalArguments",
+    "type": "object"
+   },
+   "name": "describe_retrieval"
+  },
+  "get_file_summary": {
+   "inputSchema": {
+    "properties": {
+     "knowledge_base": {
+      "title": "Knowledge Base",
+      "type": "string"
+     },
+     "path": {
+      "title": "Path",
+      "type": "string"
+     },
+     "source_name": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Source Name"
+     }
+    },
+    "required": [
+     "knowledge_base",
+     "path"
+    ],
+    "title": "get_file_summaryArguments",
+    "type": "object"
+   },
+   "name": "get_file_summary"
+  },
+  "get_ingest_status": {
+   "inputSchema": {
+    "properties": {
+     "idempotency_key": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Idempotency Key"
+     },
+     "knowledge_base": {
+      "title": "Knowledge Base",
+      "type": "string"
+     },
+     "submission_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Submission Id"
+     }
+    },
+    "required": [
+     "knowledge_base"
+    ],
+    "title": "get_ingest_statusArguments",
+    "type": "object"
+   },
+   "name": "get_ingest_status"
+  },
+  "get_snapshot": {
+   "inputSchema": {
+    "properties": {
+     "knowledge_base": {
+      "title": "Knowledge Base",
+      "type": "string"
+     },
+     "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "knowledge_base",
+     "snapshot_id"
+    ],
+    "title": "get_snapshotArguments",
+    "type": "object"
+   },
+   "name": "get_snapshot"
+  },
+  "list_knowledge_bases": {
+   "inputSchema": {
+    "properties": {},
+    "title": "list_knowledge_basesArguments",
+    "type": "object"
+   },
+   "name": "list_knowledge_bases"
+  },
+  "memory_write": {
+   "inputSchema": {
+    "properties": {
+     "kind": {
+      "default": "fact",
+      "title": "Kind",
+      "type": "string"
+     },
+     "knowledge_base": {
+      "title": "Knowledge Base",
+      "type": "string"
+     },
+     "principal": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Principal"
+     },
+     "scope": {
+      "default": "user",
+      "title": "Scope",
+      "type": "string"
+     },
+     "session": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Session"
+     },
+     "subject": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Subject"
+     },
+     "supersedes": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Supersedes"
+     },
+     "sync": {
+      "default": true,
+      "title": "Sync",
+      "type": "boolean"
+     },
+     "tags": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Tags"
+     },
+     "text": {
+      "title": "Text",
+      "type": "string"
+     },
+     "valid_until": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Valid Until"
+     }
+    },
+    "required": [
+     "knowledge_base",
+     "text"
+    ],
+    "title": "memory_writeArguments",
+    "type": "object"
+   },
+   "name": "memory_write"
+  },
+  "reconcile_ingest": {
+   "inputSchema": {
+    "properties": {
+     "knowledge_base": {
+      "title": "Knowledge Base",
+      "type": "string"
+     },
+     "submission_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Submission Id"
+     }
+    },
+    "required": [
+     "knowledge_base"
+    ],
+    "title": "reconcile_ingestArguments",
+    "type": "object"
+   },
+   "name": "reconcile_ingest"
+  },
+  "record_evidence": {
+   "inputSchema": {
+    "properties": {
+     "event_type": {
+      "title": "Event Type",
+      "type": "string"
+     },
+     "knowledge_base": {
+      "title": "Knowledge Base",
+      "type": "string"
+     },
+     "outcome_reference": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Outcome Reference"
+     },
+     "position": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Position"
+     },
+     "principal": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Principal"
+     },
+     "query": {
+      "title": "Query",
+      "type": "string"
+     },
+     "session_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Session Id"
+     },
+     "target_id": {
+      "title": "Target Id",
+      "type": "string"
+     },
+     "target_type": {
+      "default": "artifact",
+      "title": "Target Type",
+      "type": "string"
+     }
+    },
+    "required": [
+     "knowledge_base",
+     "query",
+     "target_id",
+     "event_type"
+    ],
+    "title": "record_evidenceArguments",
+    "type": "object"
+   },
+   "name": "record_evidence"
+  },
+  "register_source": {
+   "inputSchema": {
+    "properties": {
+     "description": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Description"
+     },
+     "enabled": {
+      "default": true,
+      "title": "Enabled",
+      "type": "boolean"
+     },
+     "exclude": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Exclude"
+     },
+     "include": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Include"
+     },
+     "knowledge_base": {
+      "title": "Knowledge Base",
+      "type": "string"
+     },
+     "name": {
+      "title": "Name",
+      "type": "string"
+     },
+     "path": {
+      "default": "",
+      "title": "Path",
+      "type": "string"
+     },
+     "source_type": {
+      "title": "Source Type",
+      "type": "string"
+     },
+     "sync_mode": {
+      "default": "incremental",
+      "title": "Sync Mode",
+      "type": "string"
+     },
+     "sync_now": {
+      "default": false,
+      "title": "Sync Now",
+      "type": "boolean"
+     },
+     "taxonomy": {
+      "default": false,
+      "title": "Taxonomy",
+      "type": "boolean"
+     },
+     "urls": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Urls"
+     },
+     "wait": {
+      "default": false,
+      "title": "Wait",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "knowledge_base",
+     "name",
+     "source_type"
+    ],
+    "title": "register_sourceArguments",
+    "type": "object"
+   },
+   "name": "register_source"
+  },
+  "seal_snapshot": {
+   "inputSchema": {
+    "properties": {
+     "knowledge_base": {
+      "title": "Knowledge Base",
+      "type": "string"
+     },
+     "label": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Label"
+     },
+     "note": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Note"
+     },
+     "sealed_by": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Sealed By"
+     }
+    },
+    "required": [
+     "knowledge_base"
+    ],
+    "title": "seal_snapshotArguments",
+    "type": "object"
+   },
+   "name": "seal_snapshot"
+  },
+  "search_context": {
+   "inputSchema": {
+    "properties": {
+     "as_of": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "As Of"
+     },
+     "exclude_source_types": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Exclude Source Types"
+     },
+     "exclude_sources": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Exclude Sources"
+     },
+     "include_chunks": {
+      "default": true,
+      "title": "Include Chunks",
+      "type": "boolean"
+     },
+     "include_graph_neighbors": {
+      "default": true,
+      "title": "Include Graph Neighbors",
+      "type": "boolean"
+     },
+     "knowledge_base": {
+      "title": "Knowledge Base",
+      "type": "string"
+     },
+     "max_results": {
+      "default": 10,
+      "title": "Max Results",
+      "type": "integer"
+     },
+     "memory": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Memory"
+     },
+     "min_score": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Min Score"
+     },
+     "mode": {
+      "default": "hybrid",
+      "title": "Mode",
+      "type": "string"
+     },
+     "node_types": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Node Types"
+     },
+     "principal": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Principal"
+     },
+     "principal_groups": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Principal Groups"
+     },
+     "query": {
+      "title": "Query",
+      "type": "string"
+     },
+     "section": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Section"
+     },
+     "session": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Session"
+     },
+     "snapshot_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Snapshot Id"
+     },
+     "source_name": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Source Name"
+     },
+     "source_types": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Source Types"
+     }
+    },
+    "required": [
+     "knowledge_base",
+     "query"
+    ],
+    "title": "search_contextArguments",
+    "type": "object"
+   },
+   "name": "search_context"
+  },
+  "submit_documents": {
+   "inputSchema": {
+    "properties": {
+     "agent_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Agent Id"
+     },
+     "documents": {
+      "items": {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      "title": "Documents",
+      "type": "array"
+     },
+     "knowledge_base": {
+      "title": "Knowledge Base",
+      "type": "string"
+     },
+     "source_name": {
+      "default": "submissions",
+      "title": "Source Name",
+      "type": "string"
+     },
+     "submission_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Submission Id"
+     }
+    },
+    "required": [
+     "knowledge_base",
+     "documents"
+    ],
+    "title": "submit_documentsArguments",
+    "type": "object"
+   },
+   "name": "submit_documents"
+  },
+  "sync_source": {
+   "inputSchema": {
+    "properties": {
+     "full_scan": {
+      "default": false,
+      "title": "Full Scan",
+      "type": "boolean"
+     },
+     "knowledge_base": {
+      "title": "Knowledge Base",
+      "type": "string"
+     },
+     "max_depth": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Max Depth"
+     },
+     "mode": {
+      "default": "incremental",
+      "title": "Mode",
+      "type": "string"
+     },
+     "source_name": {
+      "title": "Source Name",
+      "type": "string"
+     }
+    },
+    "required": [
+     "knowledge_base",
+     "source_name"
+    ],
+    "title": "sync_sourceArguments",
+    "type": "object"
+   },
+   "name": "sync_source"
+  }
+ }
+}

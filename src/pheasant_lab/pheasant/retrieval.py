@@ -127,6 +127,9 @@ class SearchResult:
     source_id: str | None
     locator: str | None
     retrieval_arm: str | None
+    #: The region's own name for the source the hit came from - needed to
+    #: fetch the document back, and never confused with the lab's source id.
+    region_source: str | None = None
     contributing_arms: list[str] = field(default_factory=list)
     memory_ids: list[str] = field(default_factory=list)
     steering_rules: list[str] = field(default_factory=list)
@@ -145,6 +148,7 @@ class SearchResult:
             "score": self.score,
             "source_id": self.source_id,
             "locator": self.locator,
+            "region_source": self.region_source,
             "retrieval_arm": self.retrieval_arm,
             "contributing_arms": list(self.contributing_arms),
             "memory_ids": list(self.memory_ids),
@@ -218,13 +222,22 @@ class Retriever:
         config: PheasantFile,
         *,
         store_text: bool = True,
+        artifact_sources: Mapping[str, str] | None = None,
     ) -> None:
         self.client = client
         self.capabilities = capabilities
         self.config = config
         self.store_text = store_text
+        #: Region artifact id -> this lab's source id, from the ingest
+        #: receipts. Set by whoever holds the run's receipts (`evaluate`).
+        self.artifact_sources: dict[str, str] = dict(artifact_sources or {})
+        #: Region artifact id -> the relative path this lab submitted it under,
+        #: for hits that name an artifact without a path (a graph-arm
+        #: relationship hit carries only the node id).
+        self.artifact_paths: dict[str, str] = {}
         self._argument_map: dict[str, str] = dict(config.argument_map.get("search") or {})
         self._kb_field = str(config.argument_map.get("knowledge_base_field", "knowledge_base"))
+        self._documents: dict[tuple[str, str], str | None] = {}
 
     @property
     def supports_pinning(self) -> bool:
@@ -255,7 +268,7 @@ class Retriever:
         )
         payload = outcome.result.payload() if outcome.result else {}
         body = payload if isinstance(payload, Mapping) else {}
-        results = normalise_results(body, request)
+        results = normalise_results(body, request, artifact_sources=self.artifact_sources)
         return SearchResponse(
             request=request,
             results=results,
@@ -282,26 +295,87 @@ class Retriever:
         payload = outcome.result.payload() if outcome.result else {}
         return dict(payload) if isinstance(payload, Mapping) else {}
 
-    def fetch(self, artifact_id: str) -> dict[str, Any] | None:
-        if not self.capabilities.has("fetch"):
+    def fetch(self, path: str, source_name: str | None = None) -> dict[str, Any] | None:
+        """One document, by the path the region reported for it.
+
+        Pheasant's ``get_file_summary`` takes the artifact's ``path`` (the
+        relative path a hit reports, scoped by ``source_name``) and returns
+        the whole document as ``content``.
+        """
+
+        if not self.capabilities.has("fetch") or not path:
             return None
+        arguments: dict[str, Any] = {self._kb_field: self.config.knowledge_base, "path": path}
+        if source_name:
+            arguments["source_name"] = source_name
         outcome = self.client.call(
             self.capabilities.tool("fetch"),
-            {
-                self._kb_field: self.config.knowledge_base,
-                "artifact_id": artifact_id,
-                "file_path": artifact_id,
-            },
+            arguments,
             idempotent=True,
             stage="retrieval",
             allow_error=True,
         )
-        payload = outcome.result.payload() if outcome.result else None
+        if outcome.result is None or outcome.result.is_error:
+            return None
+        payload = outcome.result.payload()
         return dict(payload) if isinstance(payload, Mapping) else None
 
+    def hydrate(self, passages: Sequence[dict[str, Any]]) -> None:
+        """Replace each passage's preview with the document it came from.
 
-def normalise_results(body: Mapping[str, Any], request: SearchRequest) -> list[SearchResult]:
-    """Flatten whatever shape the region returned into ranked rows."""
+        A search hit carries a preview the region caps (500 characters on
+        pheasant), and this lab's documents open with front matter - so an
+        answerer handed previews reads metadata and very little of the
+        abstract, and its score measures the preview length rather than
+        retrieval. Pheasant's own answering path reads whole documents for
+        the same reason. A passage that cannot be fetched keeps its preview
+        and says so in ``text_source``; nothing is ever invented.
+        """
+
+        if not self.capabilities.has("fetch"):
+            for passage in passages:
+                passage.setdefault("text_source", "preview")
+            return
+        for passage in passages:
+            passage.setdefault("text_source", "preview")
+            artifact_id = str(passage.get("artifact_id") or "")
+            candidates: list[tuple[str, str]] = []
+            # The path this lab submitted the artifact under comes first: it
+            # is known rather than reported, and a hit's `locator` may be a
+            # section heading (taxonomy) or absent (a graph relationship hit).
+            if artifact_id in self.artifact_paths:
+                candidates.append((self.config.source_name, self.artifact_paths[artifact_id]))
+            if passage.get("locator"):
+                candidates.append(
+                    (str(passage.get("region_source") or ""), str(passage["locator"]))
+                )
+            for key in candidates:
+                if key not in self._documents:
+                    document = self.fetch(key[1], key[0] or None) or {}
+                    content = document.get("content") or document.get("text")
+                    self._documents[key] = str(content) if content else None
+                text = self._documents[key]
+                if text:
+                    passage["text"] = text
+                    passage["text_source"] = "document"
+                    break
+
+
+def normalise_results(
+    body: Mapping[str, Any],
+    request: SearchRequest,
+    *,
+    artifact_sources: Mapping[str, str] | None = None,
+) -> list[SearchResult]:
+    """Flatten whatever shape the region returned into ranked rows.
+
+    ``artifact_sources`` maps the region's artifact ids onto this lab's source
+    ids, built from the ingest receipts. It is the authoritative join: the
+    region's own ``provenance.source_id`` names *its* source (one per
+    submission namespace), not the lab's, and reading it as the lab's would
+    collapse every hit onto one source id - which every source-level metric
+    would then count as a single document.
+    """
 
     rows = body.get("results") or body.get("hits") or body.get("chunks") or []
     if not isinstance(rows, Sequence):
@@ -312,20 +386,24 @@ def normalise_results(body: Mapping[str, Any], request: SearchRequest) -> list[S
             continue
         provenance = row.get("provenance") if isinstance(row.get("provenance"), Mapping) else {}
         memory = row.get("memory") if isinstance(row.get("memory"), Mapping) else {}
-        text = _first_str(row, "text", "content", "snippet", "matched_text")
+        text = _first_str(row, "text", "content", "snippet", "matched_text") or _preview(row)
+        artifact_id = _first_str(row, "artifact_id", "id", "node_id", "chunk_id")
         results.append(
             SearchResult(
                 rank=int(row.get("rank") or index),
-                artifact_id=_first_str(row, "artifact_id", "id", "node_id", "chunk_id"),
+                artifact_id=artifact_id,
                 content_digest=_first_str(row, "content_digest", "digest")
                 or (provenance.get("content_digest") if provenance else None),
                 score=_as_float(row.get("score") if "score" in row else row.get("relevance")),
-                source_id=_first_str(row, "lab_source_id", "source_id")
-                or (str(provenance.get("source_id")) if provenance.get("source_id") else None)
-                or _metadata_source_id(row),
-                locator=_first_str(row, "locator", "section", "path")
-                or (str(provenance.get("path")) if provenance.get("path") else None),
-                retrieval_arm=_first_str(row, "arm", "retrieval_arm", "matched_by"),
+                source_id=_first_str(row, "lab_source_id")
+                or _metadata_source_id(row)
+                or (artifact_sources or {}).get(artifact_id or "")
+                or _front_matter_source_id(text),
+                locator=_first_str(row, "locator", "section", "relative_path", "path")
+                or _first_str(provenance, "relative_path", "path"),
+                region_source=_first_str(provenance, "source_id", "source_name")
+                or _first_str(row, "source_name"),
+                retrieval_arm=_first_str(row, "arm", "retrieval_arm", "retrieved_by", "matched_by"),
                 contributing_arms=[
                     str(a) for a in (row.get("contributing_arms") or row.get("arms") or [])
                 ],
@@ -343,6 +421,46 @@ def normalise_results(body: Mapping[str, Any], request: SearchRequest) -> list[S
             )
         )
     return results
+
+
+def _preview(row: Mapping[str, Any]) -> str | None:
+    """The passage text a region returned under a name other than ``text``.
+
+    Pheasant's hits carry the matched chunks' ``text_preview`` (and a shorter
+    ``summary``) rather than a ``text`` field. Both are previews, capped by the
+    region; :meth:`Retriever.hydrate` replaces them with the document itself.
+    """
+
+    chunks = row.get("chunks")
+    if isinstance(chunks, Sequence) and not isinstance(chunks, str):
+        parts = [
+            str(chunk.get("text_preview") or chunk.get("text") or "")
+            for chunk in chunks
+            if isinstance(chunk, Mapping)
+        ]
+        joined = "\n".join(part for part in parts if part)
+        if joined:
+            return joined
+    return _first_str(row, "summary")
+
+
+def _front_matter_source_id(text: str | None) -> str | None:
+    """The ``lab_source_id`` this lab wrote into a document's front matter.
+
+    The last resort, for a hit whose artifact the receipts do not name (a
+    region populated by an earlier run). It reads only what the researcher
+    itself wrote, never anything the region inferred.
+    """
+
+    if not text or not text.startswith("---"):
+        return None
+    for line in text.splitlines()[1:40]:
+        if line.strip() == "---":
+            return None
+        key, _, value = line.partition(":")
+        if key.strip() == "lab_source_id" and value.strip():
+            return value.strip()
+    return None
 
 
 def _metadata_source_id(row: Mapping[str, Any]) -> str | None:

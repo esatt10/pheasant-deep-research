@@ -31,6 +31,8 @@ class PheasantCorpusArm(Arm):
         ):
             responses = self._retrieve(question, answer)
             passages = passages_from(responses, limit=self.config.replay.max_results_per_search)
+            assert self.context.retriever is not None
+            self.context.retriever.hydrate(passages)
             answer.retrieved_artifact_ids = [
                 str(p["artifact_id"]) for p in passages if p.get("artifact_id")
             ]

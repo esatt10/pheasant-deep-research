@@ -710,7 +710,8 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
             limitations.append(
                 f"This region's search tool accepts no snapshot pin, so `P0` ran unpinned. "
                 f"Snapshot `{snapshot_id}` was used as a drift check instead: the run fails its "
-                "snapshot gate if any section other than `memory` moved during evaluation."
+                "snapshot gate if the region moved between the freeze and the start of "
+                "evaluation."
             )
         elif not snapshot_id:
             limitations.append(
@@ -770,6 +771,24 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
             1 for r in receipts if str(r.get("status")) in {"accepted", "indexed", "verified"}
         )
         submitted = len(receipts)
+        if session.retriever is not None:
+            # The receipts are the join between what the region calls a hit
+            # and which of this lab's sources it is; see `normalise_results`.
+            session.retriever.artifact_sources = {
+                str(r["artifact_id"]): str(r["source_id"])
+                for r in receipts
+                if r.get("artifact_id") and r.get("source_id")
+            }
+            paths = {
+                str(row["idempotency_key"]): str(row["relative_path"])
+                for row in read_jsonl(session.paths.raw_file("ingest-requests.jsonl"))
+                if row.get("idempotency_key") and row.get("relative_path")
+            }
+            session.retriever.artifact_paths = {
+                str(r["artifact_id"]): paths[str(r["idempotency_key"])]
+                for r in receipts
+                if r.get("artifact_id") and str(r.get("idempotency_key")) in paths
+            }
 
         engine = EvaluationEngine(
             config,
