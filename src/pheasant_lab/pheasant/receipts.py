@@ -180,6 +180,16 @@ def parse_receipts(
 
     if isinstance(payload, Mapping):
         rows = payload.get("receipts") or payload.get("items") or payload.get("results") or []
+        if not rows:
+            # Pheasant's `submit_documents` splits its receipts by outcome
+            # rather than returning one list: `accepted` and `rejected` are
+            # both lists of receipts there, not counts.
+            rows = [
+                row
+                for name in ("accepted", "rejected")
+                if isinstance(payload.get(name), list)
+                for row in payload[name]
+            ]
         submission_id = payload.get("submission_id", submission_id)
     else:
         rows = list(payload)
@@ -191,31 +201,51 @@ def parse_receipts(
         key = str(row.get("idempotency_key") or row.get("key") or "")
         source_id = key_to_source.get(key, str(row.get("source_id") or ""))
         status = str(row.get("status") or row.get("disposition") or "unknown")
+        detail = row.get("detail") if isinstance(row.get("detail"), Mapping) else {}
+        server_submissions = row.get("submissions")
         receipts.append(
             IngestReceipt(
                 receipt_id=str(row.get("receipt_id") or f"receipt-{key}"),
                 run_id=run_id,
                 source_id=source_id,
                 idempotency_key=key,
-                submission_id=str(submission_id) if submission_id else None,
+                submission_id=str(row.get("submission_id") or submission_id or "") or None,
                 status=status,
                 artifact_id=_opt(row, "artifact_id", "artifact"),
                 document_id=_opt(row, "document_id", "document"),
                 content_digest=(requested_digests or {}).get(key),
+                # Only a digest the region computed over what it stored. The
+                # receipt's `detail` echoes the metadata this lab submitted -
+                # including its own `content_digest` - and comparing that with
+                # itself would verify nothing.
                 accepted_content_digest=_opt(
                     row, "content_digest", "accepted_content_digest", "digest"
+                )
+                or _sha256(row.get("content_sha256")),
+                deduplicated=bool(
+                    row.get("deduplicated")
+                    or row.get("folded")
+                    or (isinstance(server_submissions, int) and server_submissions > 1)
                 ),
-                deduplicated=bool(row.get("deduplicated") or row.get("folded") or False),
                 dedup_outcome=_opt(row, "dedup_outcome", "outcome"),
                 server_trace_id=_opt(row, "trace_id", "server_trace_id"),
                 indexing_state=_opt(row, "indexing_state", "index_state"),
                 error_code=_opt(row, "error_code", "code"),
-                error_message=_opt(row, "error", "message"),
+                error_message=_opt(row, "error", "message") or _opt(detail, "reason"),
                 retryable=row.get("retryable"),
                 raw=dict(row),
             )
         )
     return receipts
+
+
+def _sha256(value: Any) -> str | None:
+    """A bare hex digest in this lab's ``sha256:<hex>`` spelling."""
+
+    if not value:
+        return None
+    text = str(value)
+    return text if text.startswith("sha256:") else f"sha256:{text}"
 
 
 def fold_receipts(rows: Iterable[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:

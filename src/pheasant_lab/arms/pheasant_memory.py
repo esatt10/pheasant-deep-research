@@ -142,14 +142,20 @@ class MemorySeeder:
                         "text": f"{first[0]} -> {fresh[0]}",
                     }
                 )
-        # 3. A preference: the source the session found useful.
-        if artifacts:
+        # 3. A preference: the source the session found useful, in the
+        #    region's own rule grammar (`when: <terms> -> prefer: <path>`). A
+        #    record the region cannot parse is ignored there without a word,
+        #    so a free-text preference would be a P1 treatment that never
+        #    took effect while the run reported it as seeded.
+        triggers = content_terms(question)[:3]
+        path = _locator(entry, artifacts[0]) if artifacts else None
+        if triggers and path:
             out.append(
                 {
                     "kind": "preference",
                     "scope": "org",
                     "subject": _subject(question),
-                    "text": f"prefer material like {artifacts[0]} for {_subject(question)}",
+                    "text": f"when: {', '.join(triggers)} -> prefer: {path}",
                 }
             )
         return out
@@ -181,8 +187,10 @@ class MemorySeeder:
             return None
         payload = outcome.result.payload() if outcome.result else {}
         body = payload if isinstance(payload, Mapping) else {}
+        # Pheasant nests the stored record under `record`.
+        stored = body.get("record") if isinstance(body.get("record"), Mapping) else body
         written = {
-            "record_id": str(body.get("record_id") or ""),
+            "record_id": str(stored.get("record_id") or body.get("record_id") or ""),
             "kind": record.get("kind"),
             "scope": record.get("scope"),
             "subject": record.get("subject"),
@@ -194,6 +202,16 @@ class MemorySeeder:
         if self.tracer is not None:
             self.tracer.append("memory-records.jsonl", written)
         return written
+
+
+def _locator(entry: Mapping[str, Any], artifact_id: str) -> str | None:
+    """The region's path for ``artifact_id``, from the session's own searches."""
+
+    for call in entry.get("search_calls") or []:
+        for result in call.get("results") or []:
+            if str(result.get("artifact_id") or "") == artifact_id and result.get("locator"):
+                return str(result["locator"])
+    return None
 
 
 def _subject(question: str) -> str:

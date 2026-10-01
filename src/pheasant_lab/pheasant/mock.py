@@ -12,6 +12,15 @@ arm and no embeddings, and a lab result produced against it measures this
 file. Its job is to make the *plumbing* testable; the science needs the real
 region, which is why ``doctor`` refuses to treat ``mock`` as a live target.
 
+**Its wire shapes follow pheasant's, not this lab's wishes.** Every response
+here was checked against a running pheasant 0.12.16: receipts split into
+``accepted``/``rejected`` lists with a ``disposition``, acknowledgement as
+counts, a submission landing in a directory that must be registered as a
+source before ``sync_source`` will index it, hits carrying a capped preview
+rather than the passage, and ``get_file_summary`` keyed by path. A mock that
+is kinder than the server hides exactly the adapter bugs it exists to catch,
+which is how every one of those shapes once went unnoticed here.
+
 Failure injection is first-class (``FaultPlan``) because the error contract is
 a thing this repository must test, and an error path nothing exercises is an
 error path nobody has.
@@ -39,6 +48,10 @@ from . import protocol
 TOKEN = re.compile(r"[a-z0-9]+")
 K1 = 1.5
 B = 0.75
+PREFER_BONUS = 0.4
+PREFERENCE = re.compile(
+    r"\bwhen\s*:\s*(?P<when>[^\n]*?)\s*(?:->|→|=>)\s*prefer\s*:\s*(?P<prefer>[^\n]+)", re.I
+)
 
 
 def tokenize(text: str) -> list[str]:
@@ -53,6 +66,7 @@ class StoredDocument:
     metadata: dict[str, Any]
     content_digest: str
     indexed: bool = False
+    source_name: str = "submissions"
 
     @property
     def tokens(self) -> list[str]:
@@ -129,6 +143,9 @@ class MockPheasantServer:
         self.submissions: dict[str, list[str]] = {}
         self.memory: dict[str, MemoryRecord] = {}
         self.snapshots: dict[str, dict[str, Any]] = {}
+        #: Registered sources, name -> path. A submission is not searchable
+        #: until its landing directory is one of these and has been synced.
+        self.sources: dict[str, str] = {}
         self.evidence: list[dict[str, Any]] = []
         self.call_log: list[tuple[str, dict[str, Any]]] = []
         self.initialized = False
@@ -158,12 +175,14 @@ class MockPheasantServer:
                 metadata=dict(row.get("metadata") or {}),
                 content_digest=row["content_digest"],
                 indexed=bool(row.get("indexed")),
+                source_name=str(row.get("source_name") or "submissions"),
             )
             for key, row in (payload.get("documents") or {}).items()
         }
         self.receipts = dict(payload.get("receipts") or {})
         self.submissions = {k: list(v) for k, v in (payload.get("submissions") or {}).items()}
         self.snapshots = dict(payload.get("snapshots") or {})
+        self.sources = dict(payload.get("sources") or {})
         self.evidence = list(payload.get("evidence") or [])
         self.memory = {
             key: MemoryRecord(**row) for key, row in (payload.get("memory") or {}).items()
@@ -183,12 +202,14 @@ class MockPheasantServer:
                     "metadata": doc.metadata,
                     "content_digest": doc.content_digest,
                     "indexed": doc.indexed,
+                    "source_name": doc.source_name,
                 }
                 for key, doc in self.documents.items()
             },
             "receipts": self.receipts,
             "submissions": self.submissions,
             "snapshots": self.snapshots,
+            "sources": self.sources,
             "evidence": self.evidence,
             "memory": {key: record.__dict__ for key, record in self.memory.items()},
         }
@@ -296,6 +317,22 @@ class MockPheasantServer:
                 ["knowledge_base"],
             ),
             tool(
+                "register_source",
+                "Register a source: a folder/file path, or web pages by URL.",
+                {
+                    **kb,
+                    "name": {"type": "string"},
+                    "source_type": {"type": "string"},
+                    "path": {"type": "string"},
+                    "description": {"type": "string"},
+                    "enabled": {"type": "boolean"},
+                    "include": {"type": "array", "items": {"type": "string"}},
+                    "exclude": {"type": "array", "items": {"type": "string"}},
+                    "sync_now": {"type": "boolean"},
+                },
+                ["knowledge_base", "name", "source_type"],
+            ),
+            tool(
                 "sync_source",
                 "Trigger one source sync.",
                 {**kb, "source_name": {"type": "string"}, "mode": {"type": "string"}},
@@ -323,9 +360,9 @@ class MockPheasantServer:
             ),
             tool(
                 "get_file_summary",
-                "A compact summary and provenance for one artifact.",
-                {**kb, "artifact_id": {"type": "string"}, "file_path": {"type": "string"}},
-                ["knowledge_base"],
+                "Return summary and provenance for one indexed file.",
+                {**kb, "path": {"type": "string"}, "source_name": {"type": "string"}},
+                ["knowledge_base", "path"],
             ),
             tool(
                 "memory_write",
@@ -412,6 +449,7 @@ class MockPheasantServer:
             "submit_documents",
             "acknowledge_ingest",
             "sync_source",
+            "register_source",
             "memory_write",
             "seal_snapshot",
             "record_evidence",
@@ -444,7 +482,9 @@ class MockPheasantServer:
         submission_id = str(
             arguments.get("submission_id") or "submission-" + digest(arguments)[7:23]
         )
-        receipts: list[dict[str, Any]] = []
+        source_name = str(arguments.get("source_name") or "submissions")
+        accepted: list[dict[str, Any]] = []
+        rejected: list[dict[str, Any]] = []
         keys: list[str] = []
         for entry in arguments.get("documents") or []:
             if not isinstance(entry, Mapping):
@@ -453,126 +493,208 @@ class MockPheasantServer:
             text = str(entry.get("text") or "")
             key = str(entry.get("idempotency_key") or digest_text(path + text))
             metadata = dict(entry.get("metadata") or {})
-            content_digest = digest_text(text)
             keys.append(key)
 
             existing = self.receipts.get(key)
             if existing is not None:
+                # One key, one receipt: the retry folds onto it and bumps the
+                # region's own count of submissions.
                 existing["submissions"] = int(existing.get("submissions", 1)) + 1
-                existing["deduplicated"] = True
-                existing["dedup_outcome"] = "folded_onto_existing_receipt"
-                receipts.append(dict(existing))
+                (rejected if existing["disposition"] == "rejected" else accepted).append(
+                    dict(existing)
+                )
                 continue
+            sha = digest_text(text).removeprefix("sha256:")
             if not path or not text:
-                receipt = {
-                    "idempotency_key": key,
-                    "status": "rejected",
-                    "error_code": "EMPTY_DOCUMENT",
-                    "error": "a document needs a relative_path and text",
-                    "retryable": False,
-                    "submissions": 1,
-                }
+                receipt = self._receipt(
+                    key,
+                    submission_id,
+                    source_name,
+                    disposition="rejected",
+                    content_sha256=sha,
+                    error_code="INVALID_REQUEST",
+                    detail={"reason": "a document needs a relative_path and text", **metadata},
+                )
                 self.receipts[key] = receipt
-                receipts.append(dict(receipt))
+                rejected.append(dict(receipt))
                 continue
 
-            artifact_id = f"artifact:{self.knowledge_base}:{path}"
+            artifact_id = _artifact_id(source_name, path)
             self.documents[artifact_id] = StoredDocument(
                 artifact_id=artifact_id,
                 relative_path=path,
                 text=text,
                 metadata=metadata,
-                content_digest=content_digest,
+                content_digest=digest_text(text),
                 indexed=self.auto_index,
+                source_name=source_name,
             )
-            receipt = {
-                "idempotency_key": key,
-                "status": "indexed" if self.auto_index else "accepted",
-                "artifact_id": artifact_id,
-                "document_id": artifact_id,
-                "content_digest": content_digest,
-                "indexing_state": "indexed" if self.auto_index else "pending",
-                "deduplicated": False,
-                "submissions": 1,
-                "trace_id": digest(key)[7:39],
-            }
+            receipt = self._receipt(
+                key,
+                submission_id,
+                source_name,
+                disposition="accepted",
+                content_sha256=sha,
+                artifact_id=artifact_id,
+                detail={"relative_path": path, **metadata},
+            )
             self.receipts[key] = receipt
-            receipts.append(dict(receipt))
+            accepted.append(dict(receipt))
         self.submissions[submission_id] = keys
         self._generation += 1
-        return {"submission_id": submission_id, "receipts": receipts, "accepted": len(receipts)}
+        return {
+            "knowledge_base": self.knowledge_base,
+            "submission_id": submission_id,
+            "source_name": source_name,
+            "directory": self._directory(source_name),
+            "submitted": len(keys),
+            "accepted": accepted,
+            "rejected": rejected,
+            "indexed": 0,
+            "next": "sync the source, then call ingest_acknowledge to cross the index barrier",
+        }
+
+    def _receipt(
+        self,
+        key: str,
+        submission_id: str,
+        source_name: str,
+        *,
+        disposition: str,
+        content_sha256: str,
+        artifact_id: str | None = None,
+        error_code: str | None = None,
+        detail: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        now = isonow()
+        return {
+            "receipt_id": digest({"k": key, "s": submission_id})[7:39],
+            "idempotency_key": key,
+            "submission_id": submission_id,
+            "source_name": source_name,
+            "disposition": disposition,
+            "submitted_at": now,
+            "updated_at": now,
+            "indexed_at": None,
+            "artifact_id": artifact_id,
+            "content_sha256": content_sha256,
+            "chunk_count": None,
+            "submissions": 1,
+            "error_code": error_code,
+            "retryable": False,
+            "detail": dict(detail or {}),
+        }
+
+    def _directory(self, source_name: str) -> str:
+        return f"/state/uploads/{source_name}"
+
+    def _keys_for(self, submission: Any) -> list[str]:
+        if submission:
+            return list(self.submissions.get(str(submission), []))
+        return list(self.receipts)
 
     def _tool_get_ingest_status(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         key = arguments.get("idempotency_key")
-        submission = arguments.get("submission_id")
         if key:
             receipt = self.receipts.get(str(key))
-            return {"receipts": [dict(receipt)] if receipt else []}
-        keys = (
-            self.submissions.get(str(submission), list(self.receipts))
-            if submission
-            else list(self.receipts)
-        )
-        return {"receipts": [dict(self.receipts[k]) for k in keys if k in self.receipts]}
+            return {
+                "knowledge_base": self.knowledge_base,
+                "receipts": [dict(receipt)] if receipt else [],
+                "found": receipt is not None,
+            }
+        keys = self._keys_for(arguments.get("submission_id"))
+        receipts = [dict(self.receipts[k]) for k in keys if k in self.receipts]
+        return {
+            "knowledge_base": self.knowledge_base,
+            "submission_id": arguments.get("submission_id"),
+            "receipts": receipts,
+            "found": bool(receipts),
+        }
 
     def _tool_acknowledge_ingest(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        submission = arguments.get("submission_id")
-        keys = (
-            self.submissions.get(str(submission), list(self.receipts))
-            if submission
-            else list(self.receipts)
-        )
-        acknowledged = []
-        for key in keys:
-            receipt = self.receipts.get(key)
-            if not receipt or receipt.get("status") == "rejected":
-                continue
+        """Counts, not receipts - the receipts are behind get_ingest_status."""
+
+        pending = [
+            self.receipts[k]
+            for k in self._keys_for(arguments.get("submission_id"))
+            if k in self.receipts and self.receipts[k]["disposition"] == "accepted"
+        ]
+        crossed = 0
+        for receipt in pending:
             artifact = self.documents.get(str(receipt.get("artifact_id")))
             if artifact is None or not artifact.indexed:
                 continue
-            receipt["status"] = "indexed"
-            receipt["indexing_state"] = "indexed"
-            acknowledged.append(
-                {"idempotency_key": key, "status": "indexed", "artifact_id": receipt["artifact_id"]}
-            )
-        return {"acknowledged": acknowledged, "count": len(acknowledged)}
+            receipt["disposition"] = "indexed"
+            receipt["indexed_at"] = receipt["updated_at"] = isonow()
+            receipt["chunk_count"] = 1
+            crossed += 1
+        return {
+            "knowledge_base": self.knowledge_base,
+            "submission_id": arguments.get("submission_id"),
+            "acknowledged": crossed,
+            "still_accepted": len(pending) - crossed,
+        }
 
     def _tool_reconcile_ingest(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        submission = arguments.get("submission_id")
-        keys = (
-            self.submissions.get(str(submission), list(self.receipts))
-            if submission
-            else list(self.receipts)
-        )
-        claimed = [k for k in keys if self.receipts.get(k, {}).get("artifact_id")]
-        held = [k for k in claimed if str(self.receipts[k]["artifact_id"]) in self.documents]
+        keys = [k for k in self._keys_for(arguments.get("submission_id")) if k in self.receipts]
+        by_disposition = Counter(self.receipts[k]["disposition"] for k in keys)
+        # Not a difference between two totals: two totals can agree while one
+        # item was lost and another double-written. A receipt that says
+        # `indexed` and names an artifact the region does not hold is the loss.
+        unaccounted = [
+            self.receipts[k]["receipt_id"]
+            for k in keys
+            if self.receipts[k]["disposition"] == "indexed"
+            and self.receipts[k].get("artifact_id")
+            and str(self.receipts[k]["artifact_id"]) not in self.documents
+        ]
         return {
+            "kb_id": self.knowledge_base,
+            "submission_id": arguments.get("submission_id"),
             "submitted": len(keys),
-            "receipts": len(claimed),
-            "held": len(held),
-            # Not a difference between two totals: two totals can agree while
-            # one item was lost and another double-written.
-            "silent_loss": len([k for k in claimed if k not in held]),
+            "by_disposition": dict(by_disposition),
+            "indexed": by_disposition.get("indexed", 0),
+            "rejected": by_disposition.get("rejected", 0),
+            "failed": by_disposition.get("failed", 0),
+            "accepted_not_indexed": by_disposition.get("accepted", 0),
+            "unaccounted": len(unaccounted),
+            "unaccounted_receipts": unaccounted,
+            "silent_loss": len(unaccounted),
+            "duplicated": 0,
+            "reconciled": not unaccounted,
+        }
+
+    def _tool_register_source(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
+        name = str(arguments.get("name") or "")
+        if not name:
+            raise _Refusal("register_source needs a name")
+        path = str(arguments.get("path") or "")
+        self.sources[name] = path
+        return {
+            "status": "registered",
+            "knowledge_base": self.knowledge_base,
+            "source": {"name": name, "type": arguments.get("source_type"), "path": path},
         }
 
     def _tool_sync_source(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        mode = str(arguments.get("mode") or "incremental")
+        name = str(arguments.get("source_name") or "")
+        if name not in self.sources:
+            # Pheasant's own refusal: submitting documents does not register
+            # the directory they land in.
+            raise _Refusal(f"Unknown source: {name}")
         newly = 0
         for document in self.documents.values():
-            if not document.indexed:
+            if document.source_name == name and not document.indexed:
                 document.indexed = True
                 newly += 1
-        for receipt in self.receipts.values():
-            if receipt.get("status") == "accepted":
-                receipt["status"] = "indexed"
-                receipt["indexing_state"] = "indexed"
         self._generation += 1
         return {
-            "source": arguments.get("source_name"),
-            "mode": mode,
-            "indexed": newly,
-            "total": len(self.documents),
-            "generation_id": self._generation_id(),
+            "source_id": name,
+            "mode": str(arguments.get("mode") or "incremental"),
+            "indexed_artifacts": newly,
+            "skipped_artifacts": sum(1 for d in self.documents.values() if d.source_name == name)
+            - newly,
+            "status": "healthy",
         }
 
     def _tool_search_context(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
@@ -587,8 +709,9 @@ class MockPheasantServer:
                 raise _Refusal(f"Unknown snapshot: {snapshot_id}")
             if snapshot["state_digest"] != self._state_digest():
                 raise _Refusal(
-                    f"SNAPSHOT_DRIFTED: sections moved since {snapshot_id}: "
-                    + ",".join(self._drifted_sections(snapshot))
+                    f"Snapshot {snapshot_id} no longer describes this region: "
+                    + ", ".join(self._drifted_sections(snapshot))
+                    + " changed since it was sealed."
                 )
 
         memory_mode = arguments.get("memory", "auto")
@@ -600,68 +723,105 @@ class MockPheasantServer:
         scored = self._bm25(query, indexed, steering)
         results: list[dict[str, Any]] = []
         for rank, (document, score) in enumerate(scored[:limit], start=1):
-            metadata = document.metadata
+            # Pheasant's hit shape: the artifact as `node_id`, the matched
+            # chunk's capped preview rather than the passage, and the
+            # region's own source name in provenance - not the lab's.
+            preview = document.text[:500]
             results.append(
                 {
                     "rank": rank,
-                    "artifact_id": document.artifact_id,
+                    "node_id": document.artifact_id,
+                    "chunk_id": f"chunk:{document.artifact_id}:chunk=0000",
+                    "type": "chunk",
+                    "title": document.relative_path,
+                    "path": f"{self._directory(document.source_name)}/{document.relative_path}",
+                    "relative_path": document.relative_path,
                     "score": round(score, 6),
-                    "content_digest": document.content_digest,
-                    "text": _excerpt(document.text, query),
-                    "title": metadata.get("title") or document.relative_path,
-                    "locator": document.relative_path,
-                    "arm": "text",
-                    "contributing_arms": ["text"] + (["memory"] if steering else []),
+                    "reason": "mock BM25",
+                    "summary": document.text[:240],
+                    "chunks": [
+                        {
+                            "chunk_id": f"chunk:{document.artifact_id}:chunk=0000",
+                            "text_preview": preview,
+                        }
+                    ],
                     "provenance": {
-                        "source_id": metadata.get("lab_source_id"),
-                        "path": document.relative_path,
+                        "source_id": document.source_name,
+                        "path": f"{self._directory(document.source_name)}/{document.relative_path}",
+                        "relative_path": document.relative_path,
                         "source_type": "document_folder",
                     },
-                    "metadata": metadata,
+                    "retrieved_by": "text",
                 }
             )
         if memory_enabled:
             for record in self._memory_hits(
                 query, as_of=as_of, include_rules=_include_rules(memory_mode)
             ):
+                relative = f"{record.scope}/{record.record_id}.md"
                 results.append(
                     {
                         "rank": len(results) + 1,
-                        "artifact_id": f"memory:{record.record_id}",
+                        "node_id": _artifact_id("agent-memory", relative),
+                        "type": "chunk",
+                        "title": relative,
+                        "relative_path": relative,
                         "score": 0.5,
-                        "content_digest": digest_text(record.text),
-                        "text": record.text,
-                        "title": f"memory:{record.subject or record.kind}",
-                        "arm": "memory",
+                        "summary": record.text[:240],
+                        "chunks": [{"text_preview": record.text[:500]}],
+                        "retrieved_by": "text",
                         "memory": {
                             "record_id": record.record_id,
                             "scope": record.scope,
-                            "asserted_at": record.asserted_at,
+                            "subject": record.subject,
                             "kind": record.kind,
+                            "asserted_at": record.asserted_at,
+                            "tier": "hot",
                         },
-                        "provenance": {"source_id": None, "source_type": "memory"},
+                        "provenance": {
+                            "source_id": "agent-memory",
+                            "relative_path": relative,
+                            "source_type": "memory",
+                            "memory": True,
+                        },
                     }
                 )
         return {
             "results": results[:limit] if not memory_enabled else results,
             "query": query,
+            "knowledge_base": self.knowledge_base,
             "mode": arguments.get("mode", "hybrid"),
-            "snapshot_id": snapshot_id,
-            "generation_id": self._generation_id(),
-            "memory": {"enabled": memory_enabled, "steering_rules": sorted(steering)},
+            "graph_generation": self._generation_id(),
+            "lineage": {
+                "state": {
+                    "snapshot_id": snapshot_id,
+                    "graph_generation": self._generation_id(),
+                    "memory": {"enabled": memory_enabled, "steering": sorted(steering)},
+                }
+            },
         }
 
     def _tool_get_file_summary(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        key = str(arguments.get("artifact_id") or arguments.get("file_path") or "")
-        document = self.documents.get(key)
+        path = str(arguments.get("path") or "")
+        source = arguments.get("source_name")
+        document = next(
+            (
+                d
+                for d in self.documents.values()
+                if d.relative_path == path and (not source or d.source_name == source)
+            ),
+            None,
+        )
         if document is None:
-            raise _Refusal(f"Unknown artifact: {key}")
+            raise _Refusal(f"Unknown file: {path}")
         return {
-            "artifact_id": document.artifact_id,
-            "path": document.relative_path,
-            "content_digest": document.content_digest,
-            "text": document.text,
-            "metadata": document.metadata,
+            "id": document.artifact_id,
+            "source_id": document.source_name,
+            "relative_path": document.relative_path,
+            "sha256": document.content_digest.removeprefix("sha256:"),
+            "status": "indexed" if document.indexed else "pending",
+            "summary": document.text[:240],
+            "content": document.text,
         }
 
     def _tool_memory_write(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
@@ -677,7 +837,12 @@ class MockPheasantServer:
             "mem-" + digest({"t": text.lower().strip(), "s": scope, "k": kind, "j": subject})[7:23]
         )
         if record_id in self.memory:
-            return {"record_id": record_id, "created": False, "outcome": "duplicate"}
+            return {
+                "record": self._record_payload(self.memory[record_id]),
+                "created": False,
+                "source": "agent-memory",
+                "outcome": "duplicate",
+            }
         record = MemoryRecord(
             record_id=record_id,
             text=text,
@@ -693,12 +858,26 @@ class MockPheasantServer:
             self.memory[record.supersedes].superseded_by = record_id
         self.memory[record_id] = record
         self._generation += 1
+        # Pheasant nests the stored record rather than flattening it.
         return {
-            "record_id": record_id,
+            "record": self._record_payload(record),
             "created": True,
+            "source": "agent-memory",
             "outcome": "created",
-            "scope": scope,
-            "kind": kind,
+        }
+
+    @staticmethod
+    def _record_payload(record: MemoryRecord) -> dict[str, Any]:
+        return {
+            "record_id": record.record_id,
+            "scope": record.scope,
+            "subject": record.subject,
+            "text": record.text,
+            "kind": record.kind,
+            "asserted_at": record.asserted_at,
+            "supersedes": record.supersedes,
+            "written_by": record.principal,
+            "valid_until": record.valid_until,
         }
 
     def _tool_seal_snapshot(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
@@ -734,13 +913,8 @@ class MockPheasantServer:
             "default_mode": "hybrid",
             "modes_available": ["text"],
             "max_results": 10,
-            "sources": [
-                {
-                    "name": "swarm-lab-literature",
-                    "type": "document_folder",
-                    "artifacts": len(self.documents),
-                }
-            ],
+            "sources": sorted(self.sources),
+            "source_types": ["document_folder"] if self.sources else [],
             "memory": {"records": len(self.memory), "steering": len(self._steering_terms())},
             "limitation": "mock region: BM25 only, no vector or graph arm",
         }
@@ -751,7 +925,7 @@ class MockPheasantServer:
 
     # -- index -------------------------------------------------------------
     def _bm25(
-        self, query: str, documents: list[StoredDocument], steering: Mapping[str, float]
+        self, query: str, documents: list[StoredDocument], steering: Mapping[str, Any]
     ) -> list[tuple[StoredDocument, float]]:
         if not documents:
             return []
@@ -784,9 +958,17 @@ class MockPheasantServer:
             title = str(document.metadata.get("title") or "")
             title_tokens = set(tokenize(title))
             score += 0.6 * len(title_tokens & set(terms))
-            for rule, weight in steering.items():
-                if isinstance(weight, int | float) and rule in document.relative_path.lower():
-                    score += float(weight)
+            for rule, triggers in steering.items():
+                # `prefer:<path>` -> its trigger terms, as pheasant applies a
+                # preference: a relative-path prefix, only when a trigger is
+                # in the query.
+                if (
+                    rule.startswith("prefer:")
+                    and isinstance(triggers, tuple)
+                    and set(triggers) & set(terms)
+                    and document.relative_path.lower().startswith(rule.removeprefix("prefer:"))
+                ):
+                    score += PREFER_BONUS
             if score > 0:
                 scored.append((document, score))
         scored.sort(key=lambda pair: (-pair[1], pair[0].artifact_id))
@@ -801,8 +983,17 @@ class MockPheasantServer:
                 left, _, right = record.text.partition("->")
                 terms[left.strip().lower()] = right.strip()
             elif record.kind == "preference":
-                for token in tokenize(record.text):
-                    terms[token] = 0.4
+                # Pheasant's grammar, and only pheasant's: a record it cannot
+                # parse is ignored there, so it is ignored here too.
+                match = PREFERENCE.search(record.text)
+                if not match:
+                    continue
+                triggers = tuple(
+                    t.strip().lower() for t in match.group("when").split(",") if t.strip()
+                )
+                for path in match.group("prefer").split(","):
+                    if path.strip():
+                        terms["prefer:" + path.strip().lower().rstrip("/*")] = triggers
         return terms
 
     def _memory_hits(self, query: str, *, as_of: Any, include_rules: bool) -> list[MemoryRecord]:
@@ -819,9 +1010,16 @@ class MockPheasantServer:
 
     # -- state -------------------------------------------------------------
     def _sections(self) -> dict[str, str]:
+        # A memory record is an indexed artifact of the memory source in
+        # pheasant, so writing one moves `corpus` as well as `memory`. A mock
+        # that kept them apart would let a drift rule pass here that fails on
+        # every real region.
         return {
             "corpus": digest(
-                sorted((d.artifact_id, d.content_digest) for d in self.documents.values())
+                sorted(
+                    [(d.artifact_id, d.content_digest) for d in self.documents.values()]
+                    + [(r.record_id, digest_text(r.text)) for r in self.memory.values()]
+                )
             ),
             "retrieval": digest({"bm25": {"k1": K1, "b": B}}),
             "memory": digest(sorted((r.record_id, r.superseded_by) for r in self.memory.values())),
@@ -878,18 +1076,10 @@ class _InjectedFailure(RuntimeError):
         )
 
 
-def _excerpt(text: str, query: str, width: int = 480) -> str:
-    """The passage a caller would actually read.
+def _artifact_id(source_name: str, relative_path: str) -> str:
+    """Pheasant's artifact id grammar for a submitted (non-git) file."""
 
-    Centred on the first query term that appears, so a support check compares
-    against what was shown rather than against the head of the document.
-    """
-
-    terms = tokenize(query)
-    lowered = text.lower()
-    position = next((lowered.find(term) for term in terms if lowered.find(term) >= 0), 0)
-    start = max(0, position - width // 3)
-    return text[start : start + width]
+    return f"file:{source_name}:{relative_path}:branch=none"
 
 
 def _include_rules(memory_mode: Any) -> bool:

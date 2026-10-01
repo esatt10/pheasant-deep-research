@@ -201,8 +201,12 @@ def refusal_code(message: str, table: Mapping[str, str] | None) -> str | None:
     """Map a refusal's text onto a machine-readable code.
 
     ``table`` comes from the region's own readiness contract. Matching is on
-    the code string appearing in the message, which is how Pheasant spells its
-    refusals; nothing is inferred from wording.
+    the code string appearing in the message; nothing is inferred from
+    wording. Note that pheasant 0.12.16's refusal *text* does not carry its
+    code (``SNAPSHOT_DRIFTED`` reads "Snapshot ... no longer describes this
+    region"), and its contract table maps codes to exception names rather
+    than to text, so against it this returns ``None`` - unknown, which is
+    what it is - rather than a code guessed from wording.
     """
 
     if not table:

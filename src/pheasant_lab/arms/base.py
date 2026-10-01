@@ -245,6 +245,9 @@ class Arm(ABC):
                 "source_id": passage.get("source_id"),
                 "text": str(passage.get("text") or ""),
                 "rank": passage.get("rank"),
+                # `document` when the passage was read back whole, `preview`
+                # when only the region's capped preview was available.
+                **({"text_source": passage["text_source"]} if "text_source" in passage else {}),
             }
             for passage in passages
         ]
@@ -345,6 +348,7 @@ def passages_from(responses: Sequence[SearchResponse], *, limit: int) -> list[di
                     "rank": result.rank,
                     "score": result.score,
                     "locator": result.locator,
+                    "region_source": result.region_source,
                 }
             )
             if len(passages) >= limit:
