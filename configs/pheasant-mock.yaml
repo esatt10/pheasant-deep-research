@@ -50,6 +50,7 @@ argument_map:
     session: session
     snapshot_id: snapshot_id
     as_of: as_of
+    expand: expand
   ingest:
     documents: documents
     source_name: source_name

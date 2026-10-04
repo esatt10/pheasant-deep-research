@@ -1,11 +1,14 @@
 """The adapters against what pheasant actually sends.
 
-Every payload read here was captured from a running pheasant 0.12.16
-(``tests/fixtures/pheasant/responses-0.12.16.json``). The mock region is kept
-faithful to the same shapes, but a mock is only as faithful as whoever last
-checked it - the receipts, the acknowledgement counts, the hit shape and the
-nested memory record were each read wrongly here for as long as only the mock
-was asked.
+Every payload read here was captured from a running pheasant
+(``tests/fixtures/pheasant/responses-<version>.json``, written by
+``scripts/capture_pheasant_fixtures.py``). The readers are checked against each
+supported release, not only the newest: 0.12.16, 0.13.0 and 0.13.1 (which
+adds search ``expand``). The mock region is
+kept faithful to the same shapes, but a mock is only as faithful as whoever
+last checked it - the receipts, the acknowledgement counts, the hit shape and
+the nested memory record were each read wrongly here for as long as only the
+mock was asked.
 """
 
 from __future__ import annotations
@@ -40,9 +43,17 @@ PHEASANT_PREFERENCE = re.compile(
 )
 
 
-@pytest.fixture(scope="module")
-def wire() -> dict:
-    return json.loads((FIXTURES / "responses-0.12.16.json").read_text())
+#: Every capture the readers must understand, oldest first.
+RELEASES = ("0.12.16", "0.13.0", "0.13.1")
+
+
+def captured(version: str) -> dict:
+    return json.loads((FIXTURES / f"responses-{version}.json").read_text())
+
+
+@pytest.fixture(scope="module", params=RELEASES)
+def wire(request) -> dict:
+    return captured(request.param)
 
 
 def search_request() -> SearchRequest:
@@ -104,12 +115,97 @@ def test_a_real_hit_resolves_to_the_labs_source_not_the_regions(wire):
 
 def test_without_receipts_a_hit_falls_back_to_the_front_matter_not_the_region(wire):
     results = normalise_results(wire["search_context"], search_request())
-    region_sources = {r["provenance"]["source_id"] for r in wire["search_context"]["results"]}
+    region_sources = {
+        name
+        for r in wire["search_context"]["results"]
+        for name in (r.get("source_id"), (r.get("provenance") or {}).get("source_id"))
+        if name
+    }
     for result in results:
         assert result.source_id not in region_sources, (
             "the region's source name read as the lab's collapses every hit onto one source"
         )
-        assert result.source_id and result.source_id.startswith("source-")
+        # A graph-arm node hit has no front matter to read: absent, not guessed.
+        assert result.source_id is None or result.source_id.startswith("source-")
+    assert any(result.source_id for result in results)
+
+
+def test_a_graph_node_hit_names_the_regions_source_from_its_top_level():
+    """pheasant's graph arm puts the source on the hit, not under provenance.
+
+    A node hit's provenance is the node's own and need not name a source, so
+    reading only ``provenance.source_id`` fetched it back with no
+    ``source_name``. Present in 0.12.16 too; the 0.13.0 capture is the first to
+    rank one into the result list.
+    """
+
+    payload = captured("0.13.0")["search_context"]
+    node = next(hit for hit in payload["results"] if hit.get("kind") == "node")
+    assert "source_id" not in node["provenance"]
+    results = normalise_results(payload, search_request())
+    result = next(r for r in results if r.artifact_id == node["node_id"])
+    assert result.region_source == node["source_id"]
+    assert result.retrieval_arm == "graph"
+    assert result.source_id != node["source_id"]
+    assert result.graph_neighbors == []
+
+
+# -- graph expansion ---------------------------------------------------------
+
+
+def test_an_expanded_hit_keeps_its_neighbourhood():
+    payload = captured("0.13.1")["search_context_expanded"]
+    results = normalise_results(payload, search_request())
+    assert results and all(result.graph_neighbors for result in results)
+    for hit, result in zip(payload["results"], results, strict=True):
+        assert [n["node_id"] for n in result.graph_neighbors] == [
+            n["node_id"] for n in hit["graph"]["neighbors"]
+        ]
+        for neighbor in result.graph_neighbors:
+            assert {"node_id", "type", "depth", "edge_types", "via"} <= set(neighbor)
+            assert neighbor["depth"] in (1, 2)
+    # Expansion adds structure and changes nothing it was added to.
+    plain = normalise_results(captured("0.13.1")["search_context"], search_request())
+    assert [r.artifact_id for r in plain] == [r.artifact_id for r in results]
+    assert all(r.graph_neighbors == [] for r in plain)
+
+
+def test_the_mock_expands_in_pheasants_shape(config):
+    """The mock has no graph, so its neighbourhoods are empty - in the real shape."""
+
+    real = captured("0.13.1")["search_context_expanded"]
+    server = MockPheasantServer()
+    ingestor = ingestor_for(config, server)
+    ingestor.submit([request_for("dsup shields chromatin")])
+    ingestor.sync()
+    expand = {"depth": 2, "max_neighbors": 6}
+    mocked = server._tool_search_context(
+        {"knowledge_base": "pheasant-lab", "query": "dsup", "memory": "off", "expand": expand}
+    )
+    assert set(mocked["expansion"]) == set(real["expansion"])
+    assert {
+        k: mocked["expansion"][k] for k in ("depth", "max_neighbors", "exclude_edge_types")
+    } == {k: real["expansion"][k] for k in ("depth", "max_neighbors", "exclude_edge_types")}
+    assert set(mocked["results"][0]["graph"]) == set(real["results"][0]["graph"])
+    unexpanded = server._tool_search_context({"knowledge_base": "pheasant-lab", "query": "dsup"})
+    assert "expansion" not in unexpanded and "graph" not in unexpanded["results"][0]
+
+
+@pytest.mark.parametrize(
+    ("value", "refusal"),
+    [
+        ({"depth": 4}, "expand depth must be an integer from 1 to 3"),
+        ({"hops": 2}, "expand does not take hops"),
+        ({"max_neighbors": 0}, "expand.max_neighbors must be an integer from 1 to 50"),
+        ("yes", "expand must be true, a depth"),
+    ],
+)
+def test_the_mock_refuses_a_malformed_expansion_as_pheasant_does(config, value, refusal):
+    server = MockPheasantServer()
+    with pytest.raises(_Refusal, match=re.escape(refusal)):
+        server._tool_search_context(
+            {"knowledge_base": "pheasant-lab", "query": "x", "expand": value}
+        )
 
 
 # -- memory ----------------------------------------------------------------

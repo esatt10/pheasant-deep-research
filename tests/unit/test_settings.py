@@ -62,6 +62,37 @@ def test_digest_is_stable_and_excludes_unresolved_env(config):
     assert config.digest(redactor) == first
 
 
+def test_an_unset_graph_expansion_leaves_the_digest_as_it_was(config, monkeypatch):
+    """A field added after runs existed must not make those runs unresumable.
+
+    Unset, ``replay.graph_expansion`` is left out of what is digested, so a
+    config that never mentions it digests exactly as it did before the field
+    existed. Set, it is part of the experiment: an expanded run and an
+    unexpanded one are not the same comparison.
+    """
+
+    import pheasant_lab.settings as settings
+
+    hashed: list[dict] = []
+    real = settings.digest
+    monkeypatch.setattr(settings, "digest", lambda payload: hashed.append(payload) or real(payload))
+
+    assert config.pheasant.argument_map["search"]["expand"] == "expand"
+    unset = config.digest()
+    assert "graph_expansion" not in hashed[-1]["replay"]
+    # Mapped but never asked for, `expand` sends nothing, so it is not part of
+    # the experiment either.
+    assert "expand" not in hashed[-1]["pheasant"]["argument_map"]["search"]
+
+    config.replay.graph_expansion = 2
+    assert config.digest() != unset
+    assert hashed[-1]["replay"]["graph_expansion"] == 2
+    assert hashed[-1]["pheasant"]["argument_map"]["search"]["expand"] == "expand"
+
+    config.replay.graph_expansion = None
+    assert config.digest() == unset
+
+
 def test_apply_override_refuses_a_path_through_a_scalar():
     tree = {"a": 1}
     with pytest.raises(ConfigError, match="passes through a scalar"):

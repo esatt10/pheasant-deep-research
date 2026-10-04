@@ -8,7 +8,8 @@
 # adapter cannot satisfy the tool's advertised JSON Schema.
 #
 # The defaults match pheasant >= 0.12.6 (see its docs/mcp_tools.md), checked
-# end to end against 0.12.16.
+# end to end against 0.12.16, 0.13.0 and 0.13.1. As shipped it targets 0.13.1
+# (`expand`, below); see there for older regions.
 # ---------------------------------------------------------------------------
 
 transport: ${PHEASANT_MCP_TRANSPORT:-streamable_http}
@@ -92,6 +93,14 @@ discovery:
 # those two lines - mapping a name the tool does not accept is worse than
 # leaving it out, and `doctor` checks every mapped name against the tool's
 # advertised schema for exactly this reason.
+#
+# `expand` (graph neighbourhoods on each hit) arrived in pheasant 0.13.1, and
+# is mapped so `replay.graph_expansion` in the experiment file can turn it on.
+# Mapping it sends nothing by itself - the experiment decides that - but it
+# does make `doctor` refuse a region whose search tool does not take it.
+# Against pheasant 0.12.6-0.13.0, delete the line or pass
+# `--set argument_map.search.expand=null`; `doctor` refuses
+# `replay.graph_expansion` without it.
 argument_map:
   knowledge_base_field: knowledge_base
   search:
@@ -107,6 +116,7 @@ argument_map:
     principal: principal
     snapshot_id: snapshot_id
     as_of: as_of
+    expand: expand
   ingest:
     documents: documents
     source_name: source_name

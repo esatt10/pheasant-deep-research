@@ -191,6 +191,37 @@ class ReplaySection(_Model):
     pairing_policy: Literal["complete_pairs_only", "available_pairs"] = "complete_pairs_only"
     max_search_rounds_per_answer: int = 4
     max_results_per_search: int = 10
+    #: Ask the region to attach each hit's graph neighbourhood (pheasant's
+    #: ``expand`` on ``search_context``): ``true``, a depth 1-3, or an object
+    #: with ``depth``, ``max_neighbors``, ``edge_types``, ``exclude_edge_types``.
+    #: Off by default. The neighbourhood is *recorded* with every search call;
+    #: no arm reads it, so turning this on changes what a run stores, not what
+    #: an answerer sees. Sent only when the pheasant file maps ``expand``, and
+    #: ``doctor`` refuses a run that asks for it without that mapping.
+    graph_expansion: bool | int | dict[str, Any] | None = None
+
+    @field_validator("graph_expansion")
+    @classmethod
+    def _expansion_grammar(cls, value: Any) -> Any:
+        if value is None or isinstance(value, bool):
+            return value
+        if isinstance(value, int):
+            if value != 0 and not 1 <= value <= 3:
+                raise ValueError("replay.graph_expansion depth must be from 1 to 3")
+            return value
+        unknown = sorted(
+            set(value) - {"depth", "max_neighbors", "edge_types", "exclude_edge_types"}
+        )
+        if unknown:
+            raise ValueError(f"replay.graph_expansion does not take {', '.join(unknown)}")
+        return value
+
+    @property
+    def expansion(self) -> bool | int | dict[str, Any] | None:
+        """The value to send, or ``None`` for no expansion (``false``/``0`` included)."""
+
+        value = self.graph_expansion
+        return None if value is None or value is False or value == 0 else value
 
 
 class PrivacySection(_Model):
@@ -496,6 +527,25 @@ class PheasantFile(_Model):
     capabilities: dict[str, CapabilitySpec] = Field(default_factory=dict)
     discovery: DiscoverySection = Field(default_factory=DiscoverySection)
     argument_map: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("argument_map")
+    @classmethod
+    def _null_means_unmapped(cls, value: dict[str, Any]) -> dict[str, Any]:
+        """An argument mapped to null is an argument the lab does not send.
+
+        So ``--set argument_map.search.expand=null`` unmaps it for a region
+        that does not take it, without editing the file. Left in, a null would
+        read as mapped and go out under a ``None`` name.
+        """
+
+        return {
+            key: {k: v for k, v in section.items() if v is not None}
+            if isinstance(section, dict)
+            else section
+            for key, section in value.items()
+            if section is not None
+        }
+
     isolation: IsolationSection = Field(default_factory=IsolationSection)
 
     @model_validator(mode="after")
@@ -693,6 +743,15 @@ class LabConfig(_Model):
                 "logging_file",
             ):
                 experiment.pop(field_name, None)
+        # Added after runs already existed. Unset, it is left out - and so is
+        # an `expand` mapping, which sends nothing until it is set - so a run
+        # started before either existed still resumes without `--fork`.
+        replay = payload.get("replay")
+        if isinstance(replay, dict) and replay.get("graph_expansion") is None:
+            replay.pop("graph_expansion", None)
+            search_map = (payload.get("pheasant") or {}).get("argument_map", {}).get("search")
+            if isinstance(search_map, dict):
+                search_map.pop("expand", None)
         return digest(payload)
 
     def role(self, name: str) -> RoleModel:

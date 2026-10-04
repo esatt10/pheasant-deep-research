@@ -104,6 +104,11 @@ replay:
   pairing_policy: complete_pairs_only
   max_search_rounds_per_answer: 4
   max_results_per_search: 10
+  # Record each hit's graph neighbourhood with the search call (pheasant's
+  # `expand`: true, a depth 1-3, or {depth, max_neighbors, edge_types,
+  # exclude_edge_types}). Recorded only - no arm reads it. Needs `expand`
+  # mapped in the pheasant file (it is, as shipped), which needs pheasant >= 0.13.1.
+  graph_expansion: null
 
 privacy:
   store_prompt_text: true

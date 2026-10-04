@@ -120,6 +120,15 @@ uv run python scripts/export_schemas.py               # after changing a record 
   `minimum_review_or_primary_sources`. `balanced` sets
   `max_results_per_provider`, because without it the first provider in the
   list fills every subtopic and the second is never asked.
+- **Graph expansion is recorded, never read, and declared like the pin.**
+  `replay.graph_expansion` is sent only when the pheasant file maps `expand`
+  (`expand_sent` records which; the shipped file maps it, for pheasant >=
+  0.13.1, and an older region unmaps it with `--set
+  argument_map.search.expand=null`), and the neighbourhood lands on each search
+  record as `graph_neighbors`. No arm reads it: handing answerers neighbours
+  changes what `P0` measures, and on this corpus a depth-2 walk reaches other
+  papers through shared authors and venues, decoys included. That is a design
+  decision with its own evidence, not a side effect of an adapter update.
 - **Question wording and its matcher are disjoint by construction.** The
   builder splits a claim into subject terms (which the question names) and
   answer terms (which the matcher requires), and `_harden` rebuilds any matcher
@@ -166,7 +175,21 @@ uv run python scripts/export_schemas.py               # after changing a record 
   were empty and every seeded preference was silently ignored. The mock now
   mirrors captured wire shapes, and `tests/contract/test_pheasant_wire.py`
   reads the captured payloads themselves (`tests/fixtures/pheasant/`) so the
-  next drift fails offline. Regenerate those fixtures against a new release.
+  next drift fails offline. Regenerate those fixtures against a new release
+  with `scripts/capture_pheasant_fixtures.py`, and keep the old ones: the
+  readers are tested against every supported release, not only the newest.
+- **A capture that never contained a hit shape cannot test it.** pheasant's
+  graph arm puts a node hit's source on the hit, not under `provenance`, and
+  has since before 0.12.16 - but that capture ranked no node hit into its
+  result list, so `region_source` was read from `provenance` alone and such
+  hits were fetched back with no `source_name`. The 0.13.0 capture ranked one
+  second. Read every shape a capture holds, not just the first hit.
+- **A field added to the config changes every existing run's digest.** The
+  digest is over the whole resolved config, so a new setting - even unset -
+  makes every run started before it refuse to resume without `--fork`.
+  `LabConfig.digest` leaves `replay.graph_expansion` out while it is unset,
+  and the `expand` mapping with it, since a mapping nothing asks for sends
+  nothing; do the same for the next one.
 - **A sequence number taken under a lock and written after it is not
   sequential.** `EventLog.emit` numbered events inside the lock and appended
   outside it, so concurrent branches wrote 10 before 9 and `verify` reported a
