@@ -367,7 +367,7 @@ def _shipped_pheasant_file(environ: dict[str, str] | None = None):
     return PheasantFile.model_validate(interpolate(body, environ or {}, []))
 
 
-def _pheasant_tools(version: str = "0.12.16") -> dict:
+def _pheasant_tools(version: str = "0.13.1") -> dict:
     import json
     from pathlib import Path
 
@@ -378,7 +378,7 @@ def _pheasant_tools(version: str = "0.12.16") -> dict:
 def test_the_shipped_example_config_resolves_against_a_real_pheasant():
     """A regression guard on the configuration itself, against the real thing.
 
-    The schemas are pheasant 0.12.16's own ``tools/list``, captured from a
+    The schemas are pheasant 0.13.1's own ``tools/list``, captured from a
     running region rather than written down, so this fails when the shipped
     map names a tool or an argument the region does not have - including a
     pin it does not accept, which would make a run *look* pinned. The mock
@@ -392,10 +392,38 @@ def test_the_shipped_example_config_resolves_against_a_real_pheasant():
     capabilities = resolve(config, tools)
     unusable = {r.name: r.reason for r in capabilities.resolutions.values() if not r.usable}
     assert unusable == {}
-    # pheasant >= 0.12.6 takes the pin on `search_context`, so P0 is pinned.
+    # pheasant >= 0.12.6 takes the pin on `search_context`, so P0 is pinned;
+    # 0.13.1 takes `expand`, so graph expansion is one experiment setting away.
     search_arguments = set(tools["search_context"]["inputSchema"]["properties"])
-    assert {"snapshot_id", "as_of"} <= set(configured_arguments(config, "search"))
+    assert {"snapshot_id", "as_of", "expand"} <= set(configured_arguments(config, "search"))
     assert set(configured_arguments(config, "search")) <= search_arguments
+
+
+@pytest.mark.parametrize("version", ["0.12.16", "0.13.0"])
+def test_an_older_region_refuses_the_shipped_map_until_expand_is_unmapped(version):
+    """The documented way back to pheasant 0.12.6-0.13.0, run against their schemas.
+
+    Mapped, ``expand`` is an argument their search tool does not take, so
+    preflight refuses and names it. Unmapped the way the shipped file says to
+    (``--set argument_map.search.expand=null``), everything else resolves.
+    """
+
+    from pheasant_lab.pheasant.capabilities import resolve
+
+    tools = _pheasant_tools(version)
+    refused = resolve(_shipped_pheasant_file(), tools)
+    assert refused.has("search") is False
+    assert "expand" in (refused.resolutions["search"].reason or "")
+
+    from pheasant_lab.settings import PheasantFile
+
+    body = _shipped_pheasant_file().model_dump()
+    body["argument_map"]["search"]["expand"] = None
+    unmapped = PheasantFile.model_validate(body)
+    assert "expand" not in unmapped.argument_map["search"]
+    capabilities = resolve(unmapped, tools)
+    unusable = {r.name: r.reason for r in capabilities.resolutions.values() if not r.usable}
+    assert unusable == {}
 
 
 def test_a_pin_the_region_does_not_accept_is_refused_at_preflight():
@@ -413,3 +441,104 @@ def test_a_pin_the_region_does_not_accept_is_refused_at_preflight():
     capabilities = resolve(_shipped_pheasant_file(), {**tools, "search_context": search})
     assert capabilities.has("search") is False
     assert "snapshot_id" in (capabilities.resolutions["search"].reason or "")
+
+
+# -- graph expansion, declared like the pin ------------------------------------
+
+
+def test_expansion_is_sent_only_when_the_region_declares_a_name_for_it():
+    from pheasant_lab.pheasant.retrieval import SearchRequest
+
+    request = SearchRequest(
+        run_id="run-1",
+        arm_id="P0",
+        question_id="q-1",
+        query="dsup",
+        namespace="pheasant-lab",
+        expand={"depth": 2},
+    )
+    unmapped = {"query": "query", "max_results": "max_results", "mode": "mode", "memory": "memory"}
+    assert "expand" not in request.as_arguments(unmapped, "knowledge_base", "pheasant-lab")
+    assert request.expand_sent(unmapped) is False
+
+    mapped = {**unmapped, "expand": "expand"}
+    assert request.as_arguments(mapped, "knowledge_base", "pheasant-lab")["expand"] == {"depth": 2}
+    assert request.expand_sent(mapped) is True
+
+    request.expand = None
+    assert "expand" not in request.as_arguments(mapped, "knowledge_base", "pheasant-lab")
+    assert request.expand_sent(mapped) is False
+
+
+def test_the_response_records_the_expansion_the_region_reported(config, mock_server, tracer):
+    from pheasant_lab.pheasant.capabilities import resolve
+    from pheasant_lab.pheasant.retrieval import Retriever, SearchRequest
+
+    config.pheasant.argument_map["search"] = {
+        **config.pheasant.argument_map["search"],
+        "expand": "expand",
+    }
+    client = PheasantClient.in_process(config.pheasant, mock_server, tracer=tracer)
+    retriever = Retriever(client, resolve(config.pheasant, client.connect().tools), config.pheasant)
+    assert retriever.supports_graph_expansion is True
+    ingestor = ingestor_for(config, mock_server, tracer)
+    ingestor.submit([request_for("body about dsup")])
+    ingestor.sync()
+
+    def search(expand):
+        return retriever.search(
+            SearchRequest(
+                run_id="run-1",
+                arm_id="P0",
+                question_id="q-1",
+                query="dsup",
+                namespace="pheasant-lab",
+                expand=expand,
+            )
+        ).as_record()
+
+    expanded = search(True)
+    assert expanded["expand_sent"] is True
+    assert expanded["expansion"]["seeds"] == 1
+    assert expanded["results"][0]["graph_neighbors"] == []
+    plain = search(None)
+    assert plain["expand_sent"] is False and plain["expansion"] is None
+
+
+def test_doctor_refuses_an_expansion_the_pheasant_file_cannot_send(config, capsys):
+    from pheasant_lab.cli import main
+
+    demo = str(_repo() / "configs/demo.yaml")
+    common = ["doctor", "--config", demo, "--env-file", "/nonexistent", "--offline"]
+    asked = [*common, "--set", "replay.graph_expansion=2"]
+    unmapped = [*asked, "--set", "argument_map.search.expand=null"]
+    assert main(unmapped) != 0
+    assert "does not map `expand`" in capsys.readouterr().out
+
+    # Only this finding is asserted on: the rest of doctor's verdict depends
+    # on providers and the machine, which this test is not about.
+    main(asked)
+    out = capsys.readouterr().out
+    assert "capability search -> search_context: ok" in out
+    assert "does not map `expand`" not in out
+
+
+def test_graph_expansion_is_validated_when_the_config_loads():
+    from pydantic import ValidationError
+
+    from pheasant_lab.settings import ReplaySection
+
+    assert ReplaySection(graph_expansion=False).expansion is None
+    assert ReplaySection(graph_expansion=0).expansion is None
+    assert ReplaySection(graph_expansion=True).expansion is True
+    assert ReplaySection(graph_expansion={"depth": 2}).expansion == {"depth": 2}
+    with pytest.raises(ValidationError, match="from 1 to 3"):
+        ReplaySection(graph_expansion=5)
+    with pytest.raises(ValidationError, match="does not take hops"):
+        ReplaySection(graph_expansion={"hops": 2})
+
+
+def _repo():
+    from pathlib import Path
+
+    return Path(__file__).resolve().parents[2]

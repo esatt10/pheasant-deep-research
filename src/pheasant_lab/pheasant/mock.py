@@ -13,7 +13,8 @@ file. Its job is to make the *plumbing* testable; the science needs the real
 region, which is why ``doctor`` refuses to treat ``mock`` as a live target.
 
 **Its wire shapes follow pheasant's, not this lab's wishes.** Every response
-here was checked against a running pheasant 0.12.16: receipts split into
+here was checked against a running pheasant (0.12.16, 0.13.0 and
+0.13.1, which added ``expand``): receipts split into
 ``accepted``/``rejected`` lists with a ``disposition``, acknowledgement as
 counts, a submission landing in a directory that must be registered as a
 source before ``sync_source`` will index it, hits carrying a capped preview
@@ -355,6 +356,7 @@ class MockPheasantServer:
                     "min_score": {"type": "number"},
                     "as_of": {"type": "string"},
                     "snapshot_id": {"type": "string"},
+                    "expand": {"type": ["object", "integer", "boolean", "null"]},
                 },
                 ["knowledge_base", "query"],
             ),
@@ -714,6 +716,8 @@ class MockPheasantServer:
                     + " changed since it was sealed."
                 )
 
+        expansion = _expansion(arguments.get("expand"))
+
         memory_mode = arguments.get("memory", "auto")
         memory_enabled = memory_mode not in ("off", None, False)
         steering = self._steering_terms() if memory_enabled else {}
@@ -786,8 +790,9 @@ class MockPheasantServer:
                         },
                     }
                 )
-        return {
-            "results": results[:limit] if not memory_enabled else results,
+        results = results[:limit] if not memory_enabled else results
+        payload: dict[str, Any] = {
+            "results": results,
             "query": query,
             "knowledge_base": self.knowledge_base,
             "mode": arguments.get("mode", "hybrid"),
@@ -800,6 +805,22 @@ class MockPheasantServer:
                 }
             },
         }
+        if expansion is not None:
+            # Pheasant's shape, walked over no graph: this region has none, so
+            # every neighbourhood is empty and says so rather than inventing
+            # neighbours a real region would not have.
+            seeds = list(dict.fromkeys(str(hit["node_id"]) for hit in results))
+            walked = seeds[:25]
+            for hit in results:
+                if hit["node_id"] in walked:
+                    hit["graph"] = {"seed": hit["node_id"], "neighbors": [], "truncated": False}
+            payload["expansion"] = {
+                **expansion,
+                "seeds": len(walked),
+                "seeds_skipped": len(seeds) - len(walked),
+                "nodes": 0,
+            }
+        return payload
 
     def _tool_get_file_summary(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         path = str(arguments.get("path") or "")
@@ -1084,3 +1105,55 @@ def _artifact_id(source_name: str, relative_path: str) -> str:
 
 def _include_rules(memory_mode: Any) -> bool:
     return bool(isinstance(memory_mode, Mapping) and memory_mode.get("include_rules"))
+
+
+_EXPANSION_KEYS = ("depth", "max_neighbors", "edge_types", "exclude_edge_types")
+_DEFAULT_EXPANSION_EXCLUDES = ["has_chunk", "indexes"]
+
+
+def _expansion(value: Any) -> dict[str, Any] | None:
+    """``expand`` read as pheasant reads it (``services.retrieval.parse_expansion``).
+
+    Returns the settings block pheasant reports, or ``None`` for no expansion,
+    and refuses a malformed value with pheasant's own text - a mock that
+    accepted what the region refuses would hide the bug it is here to show.
+    """
+
+    if value is None or value is False:
+        return None
+    if value is True:
+        value = {}
+    elif isinstance(value, int):
+        if value == 0:
+            return None
+        value = {"depth": value}
+    elif not isinstance(value, Mapping):
+        raise _Refusal(
+            f"expand must be true, a depth (1-3), or an object with {', '.join(_EXPANSION_KEYS)}"
+        )
+    unknown = sorted(set(value) - set(_EXPANSION_KEYS))
+    if unknown:
+        raise _Refusal(
+            f"expand does not take {', '.join(unknown)}; it takes {', '.join(_EXPANSION_KEYS)}"
+        )
+    depth = value.get("depth", 1)
+    if isinstance(depth, bool) or not isinstance(depth, int) or not 1 <= depth <= 3:
+        raise _Refusal("expand depth must be an integer from 1 to 3")
+    max_neighbors = value.get("max_neighbors", 8)
+    if (
+        isinstance(max_neighbors, bool)
+        or not isinstance(max_neighbors, int)
+        or not 1 <= max_neighbors <= 50
+    ):
+        raise _Refusal("expand.max_neighbors must be an integer from 1 to 50")
+    edge_types = value.get("edge_types")
+    if "exclude_edge_types" in value:
+        excludes = list(value.get("exclude_edge_types") or [])
+    else:
+        excludes = [] if edge_types else list(_DEFAULT_EXPANSION_EXCLUDES)
+    return {
+        "depth": depth,
+        "max_neighbors": max_neighbors,
+        "edge_types": list(edge_types) if edge_types else None,
+        "exclude_edge_types": excludes,
+    }

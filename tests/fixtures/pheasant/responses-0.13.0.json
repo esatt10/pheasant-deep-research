@@ -1,0 +1,251 @@
+{
+  "acknowledge_ingest": {
+    "acknowledged": 0,
+    "knowledge_base": "pheasant-lab",
+    "still_accepted": 1,
+    "submission_id": null
+  },
+  "get_file_summary": {
+    "acl": null,
+    "content": "---\nlab_source_id: source-7ee04b58a1c1d981\ntitle: Structural basis of nucleosome binding by the tardigrade damage suppressor protein\nstable_identifier: 10.5555/synthetic.dsup.2018.009\ncanonical_url: \npublished_at: 2018-02-11\nsource_type: journal_article\nvenue: Structural Biology Letters\nlicense: unknown\nauthors: Wei Chen, Nadia Haddad\nprovider: fixtures\n---\n\n# Structural basis of nucleosome binding by the tardigrade damage suppressor protein\n\nA cryo-EM structure of Dsup bound to the nucleosome core particle at 3.4 angstrom resolution shows that the protein engages the acidic patch through a bipartite basic motif and drapes across the DNA gyres. Binding does not distort the histone octamer. The structure explains sequence-independent association and predicts that protection operates by steric occlusion of the DNA surface from diffusing hydroxyl radicals rather than by radical scavenging.",
+    "git_branch": null,
+    "git_commit": null,
+    "id": "file:swarm-lab-literature:topic-tardigrade-radiotolerance/10.5555_synthetic.dsup.2018.009.md:branch=none",
+    "last_indexed_at": "2026-10-04T20:55:08Z",
+    "mime_type": "text/markdown",
+    "mtime": "2026-10-04T20:55:08Z",
+    "path": "/state/uploads/swarm-lab-literature/topic-tardigrade-radiotolerance/10.5555_synthetic.dsup.2018.009.md",
+    "relative_path": "topic-tardigrade-radiotolerance/10.5555_synthetic.dsup.2018.009.md",
+    "sha256": "dea2441c800a417ab56850e1c51ee0c1c49cf59a9f93ef9086e7ac61712a9ea4",
+    "size_bytes": 900,
+    "source_id": "swarm-lab-literature",
+    "status": "indexed",
+    "summary": "---\nlab_source_id: source-7ee04b58a1c1d981\ntitle: Structural basis of nucleosome binding by the tardigrade damage suppressor protein\nstable_identifier: 10.5555/synthetic.dsup.2018.009\ncanonical_url: \npublished_at: 2018-02-11\nsource_type: jo",
+    "type": "markdown_note"
+  },
+  "memory_write": {
+    "created": true,
+    "outcome": "created",
+    "record": {
+      "asserted_at": "2026-10-04T20:55:09Z",
+      "kind": "fact",
+      "path": "/memory/org/mem-20261004T205509Z-5035fe6c676273e4.md",
+      "record_id": "mem-20261004T205509Z-5035fe6c676273e4",
+      "schema_version": 2,
+      "scope": "org",
+      "subject": null,
+      "supersedes": null,
+      "tags": [],
+      "text": "fixture fact",
+      "valid_from": "2026-10-04T20:55:09Z",
+      "valid_until": null,
+      "written_by": "pheasant-swarm-lab"
+    },
+    "source": "agent-memory",
+    "sync": {
+      "details": {
+        "checkpoint": {
+          "connector_type": "filesystem",
+          "cursor": {
+            "item_count": 1,
+            "last_identity": "filesystem:agent-memory:org/mem-20261004T205509Z-5035fe6c676273e4.md"
+          },
+          "high_watermark": {
+            "indexed_artifacts": 1,
+            "item_count": 1,
+            "listed_at": "2026-10-04T20:55:09Z",
+            "max_mtime": "2026-10-04T20:55:09Z",
+            "skipped_artifacts": 0
+          },
+          "source_id": "agent-memory",
+          "status": "healthy",
+          "updated_at": "2026-10-04T20:55:09Z"
+        },
+        "connector_type": "filesystem",
+        "fetched": 1,
+        "skipped": 0
+      },
+      "graph_edges": 208,
+      "graph_nodes": 78,
+      "indexed_artifacts": 1,
+      "skipped_artifacts": 0,
+      "source_id": "agent-memory",
+      "status": "healthy"
+    }
+  },
+  "note": "Responses captured from a running pheasant 0.13.0; host paths normalised to /state.",
+  "search_context": {
+    "counts": {
+      "graph": 3,
+      "returned": 2,
+      "text": 6,
+      "vector": 0
+    },
+    "graph_generation": "44346a57da63cedd",
+    "knowledge_base": "pheasant-lab",
+    "lineage": {
+      "knowledge_base": "pheasant-lab",
+      "query_id": "q-8f295e3de60e753386756f7837467d9b",
+      "state": {
+        "acl_enforced": true,
+        "as_of": null,
+        "criteria": {
+          "exclude_source_types": null,
+          "exclude_sources": null,
+          "memory": "off",
+          "min_score": null,
+          "node_types": null,
+          "source_name": null,
+          "source_types": null
+        },
+        "graph_generation": "44346a57da63cedd",
+        "max_results": 2,
+        "memory": {
+          "enabled": true,
+          "policy": null,
+          "steering": null
+        },
+        "mode": "hybrid",
+        "principal": null,
+        "principal_groups": [],
+        "ranking": {
+          "bundle_id": "",
+          "provenance": "config",
+          "values": {
+            "depth_prior": 0.05,
+            "filter_overfetch": 3.0,
+            "graph_arm_weight": 1.0,
+            "heading_weight": 2.0,
+            "path_weight": 3.0,
+            "prefer_bonus": 0.35,
+            "prior_floor": 0.25,
+            "rrf_k": 60.0,
+            "sample_prior": 0.3,
+            "test_prior": 0.6,
+            "text_arm_weight": 1.0,
+            "text_weight": 1.0,
+            "title_weight": 8.0,
+            "vector_arm_weight": 1.0
+          }
+        },
+        "snapshot_current": null,
+        "snapshot_id": null
+      },
+      "timing": {
+        "retrieval_ms": 7.898,
+        "returned": 2,
+        "truncated": true
+      },
+      "trace_id": null
+    },
+    "mode": "hybrid",
+    "query": "Dsup nucleosome",
+    "results": [
+      {
+        "chunk_id": "chunk:swarm-lab-literature:topic-tardigrade-radiotolerance/10.5555_synthetic.dsup.2018.009.md:sha256=f19068828c24004edad0a0e1c1d15c0eb6f590d8f756b0f38664e0a8fcec29aa:chunk=0000",
+        "chunks": [
+          {
+            "chunk_id": "chunk:swarm-lab-literature:topic-tardigrade-radiotolerance/10.5555_synthetic.dsup.2018.009.md:sha256=f19068828c24004edad0a0e1c1d15c0eb6f590d8f756b0f38664e0a8fcec29aa:chunk=0000",
+            "end_line": 16,
+            "start_line": 1,
+            "text_preview": "---\nlab_source_id: source-7ee04b58a1c1d981\ntitle: Structural basis of nucleosome binding by the tardigrade damage suppressor protein\nstable_identifier: 10.5555/synthetic.dsup.2018.009\ncanonical_url: \npublished_at: 2018-02-11\nsource_type: journal_article\nvenue: Structural Biology Letters\nlicense: unknown\nauthors: Wei Chen, Nadia Haddad\nprovider: fixtures\n---\n\n# Structural basis of nucleosome binding by the tardigrade damage suppressor protein\n\nA cryo-EM structure of Dsup bound to the nucleosome c"
+          }
+        ],
+        "node_id": "file:swarm-lab-literature:topic-tardigrade-radiotolerance/10.5555_synthetic.dsup.2018.009.md:branch=none",
+        "path": "/state/uploads/swarm-lab-literature/topic-tardigrade-radiotolerance/10.5555_synthetic.dsup.2018.009.md",
+        "provenance": {
+          "path": "/state/uploads/swarm-lab-literature/topic-tardigrade-radiotolerance/10.5555_synthetic.dsup.2018.009.md",
+          "relative_path": "topic-tardigrade-radiotolerance/10.5555_synthetic.dsup.2018.009.md",
+          "source_id": "swarm-lab-literature",
+          "source_type": "document_folder"
+        },
+        "rank": 1,
+        "reason": "SQLite FTS/path match",
+        "relative_path": "topic-tardigrade-radiotolerance/10.5555_synthetic.dsup.2018.009.md",
+        "retrieved_by": "text",
+        "score": 0.016393,
+        "summary": "---\nlab_source_id: source-7ee04b58a1c1d981\ntitle: Structural basis of nucleosome binding by the tardigrade damage suppressor protein\nstable_identifier: 10.5555/synthetic.dsup.2018.009\ncanonical_url: \npublished_at: 2018-02-11\nsource_type: jo",
+        "title": "topic-tardigrade-radiotolerance/10.5555_synthetic.dsup.2018.009.md",
+        "type": "chunk"
+      },
+      {
+        "kind": "node",
+        "label": "topic-tardigrade-radiotolerance/10.5555_synthetic.dsup.2016.001.md",
+        "match": "label",
+        "node_id": "file:swarm-lab-literature:topic-tardigrade-radiotolerance/10.5555_synthetic.dsup.2016.001.md:branch=none",
+        "provenance": {
+          "git_branch": null,
+          "git_commit": null,
+          "path": "/state/uploads/swarm-lab-literature/topic-tardigrade-radiotolerance/10.5555_synthetic.dsup.2016.001.md",
+          "relative_path": "topic-tardigrade-radiotolerance/10.5555_synthetic.dsup.2016.001.md"
+        },
+        "rank": 2,
+        "reason": "Graph node match on label",
+        "relative_path": "topic-tardigrade-radiotolerance/10.5555_synthetic.dsup.2016.001.md",
+        "retrieved_by": "graph",
+        "score": 0.016393,
+        "source_id": "swarm-lab-literature",
+        "summary": "topic-tardigrade-radiotolerance/10.5555_synthetic.dsup.2016.001.md",
+        "title": "topic-tardigrade-radiotolerance/10.5555_synthetic.dsup.2016.001.md",
+        "type": "markdown_note"
+      }
+    ]
+  },
+  "server_version": "0.13.0",
+  "submit_documents": {
+    "accepted": [
+      {
+        "artifact_id": "file:fixture-wire:topic-x/10.1_a.md:branch=none",
+        "chunk_count": null,
+        "content_sha256": "de0a009e1ce22ed223cfb6eba1481b09b2c1005bb2a5a4c1728b90d729b28e73",
+        "detail": {
+          "agent_id": null,
+          "content_digest": "sha256:not-the-region-s",
+          "lab_source_id": "source-aaa",
+          "path": "/state/uploads/fixture-wire/topic-x/10.1_a.md",
+          "relative_path": "topic-x/10.1_a.md"
+        },
+        "disposition": "accepted",
+        "error_code": null,
+        "idempotency_key": "pheasant-lab:source-aaa:1",
+        "indexed_at": null,
+        "receipt_id": "8d67310478c5c2b28084101fbdb277a0",
+        "retryable": false,
+        "source_name": "fixture-wire",
+        "submission_id": "submission-fixture",
+        "submissions": 1,
+        "submitted_at": "2026-10-04T20:55:09Z",
+        "updated_at": "2026-10-04T20:55:09Z"
+      }
+    ],
+    "directory": "/state/uploads/fixture-wire",
+    "indexed": 0,
+    "knowledge_base": "pheasant-lab",
+    "next": "sync the source, then call ingest_acknowledge to cross the index barrier",
+    "rejected": [
+      {
+        "artifact_id": null,
+        "chunk_count": null,
+        "content_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "detail": {
+          "agent_id": null,
+          "reason": "topic-x/empty.md is empty"
+        },
+        "disposition": "rejected",
+        "error_code": "INVALID_REQUEST",
+        "idempotency_key": "pheasant-lab:source-bbb:2",
+        "indexed_at": null,
+        "receipt_id": "1bca6c7859c27789458d5f71f4f34645",
+        "retryable": false,
+        "source_name": "fixture-wire",
+        "submission_id": "submission-fixture",
+        "submissions": 1,
+        "submitted_at": "2026-10-04T20:55:09Z",
+        "updated_at": "2026-10-04T20:55:09Z"
+      }
+    ],
+    "source_name": "fixture-wire",
+    "submission_id": "submission-fixture",
+    "submitted": 2
+  }
+}

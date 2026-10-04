@@ -63,6 +63,7 @@ class PheasantCorpusArm(Arm):
                     round=round_number,
                     session=answer.session_id,
                     principal=self.context.principal,
+                    expand=self.config.replay.expansion,
                 )
                 try:
                     response = self.context.retriever.search(request)

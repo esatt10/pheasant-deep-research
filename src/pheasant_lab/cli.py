@@ -374,6 +374,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     redactor = _redactor(config)
     notes.append(f"{redactor.known} secret value(s) registered for redaction")
 
+    # The experiment asks for neighbourhoods; only the pheasant file can say
+    # how to send them. Without the mapping every search would go out
+    # unexpanded and the run would record nothing where it meant to record
+    # the graph - the unpinned-pin shape, one argument over.
+    search_map = config.pheasant.argument_map.get("search") or {}
+    if config.replay.expansion is not None and "expand" not in search_map:
+        findings.append(
+            "replay.graph_expansion is set but the pheasant file's argument_map.search does "
+            "not map `expand`; map it (pheasant >= 0.13.1) or "
+            "unset replay.graph_expansion"
+        )
+
     transport = config.pheasant.transport
     if getattr(args, "mock", False) or transport == "mock":
         notes.append(

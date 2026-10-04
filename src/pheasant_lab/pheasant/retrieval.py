@@ -74,6 +74,9 @@ class SearchRequest:
     round: int = 1
     session: str | None = None
     principal: str | None = None
+    #: The region's graph expansion, as ``replay.graph_expansion`` spells it.
+    #: Sent only when the argument map names ``expand``, like the pin.
+    expand: Any = None
 
     @property
     def search_request_id(self) -> str:
@@ -85,6 +88,11 @@ class SearchRequest:
         """Was this request actually pinned to a snapshot on the wire?"""
 
         return bool(self.snapshot_id) and "snapshot_id" in argument_map
+
+    def expand_sent(self, argument_map: Mapping[str, str]) -> bool:
+        """Did this request ask the region for graph neighbourhoods?"""
+
+        return self.expand is not None and "expand" in argument_map
 
     def as_arguments(
         self, argument_map: Mapping[str, str], kb_field: str, knowledge_base: str
@@ -111,6 +119,8 @@ class SearchRequest:
             arguments[argument_map["snapshot_id"]] = self.snapshot_id
         if self.as_of and "as_of" in argument_map:
             arguments[argument_map["as_of"]] = self.as_of
+        if self.expand_sent(argument_map):
+            arguments[argument_map["expand"]] = self.expand
         for key, value in self.filters.items():
             arguments[argument_map.get(key, key)] = value
         return arguments
@@ -139,6 +149,11 @@ class SearchResult:
     index_version: str | None = None
     source_type: str | None = None
     title: str | None = None
+    #: The hit's graph neighbourhood, when the search asked for one: each
+    #: neighbour's node id, type, label, the artifact it belongs to, its depth,
+    #: the edge types it was reached by and the node it was reached ``via``.
+    #: Empty when nothing was asked or the region walked nothing.
+    graph_neighbors: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -158,6 +173,7 @@ class SearchResult:
             "index_version": self.index_version,
             "source_type": self.source_type,
             "title": self.title,
+            "graph_neighbors": [dict(n) for n in self.graph_neighbors],
         }
 
 
@@ -179,6 +195,12 @@ class SearchResponse:
     #: recorded locally. False with a snapshot_id set means the region offers
     #: no pin and the snapshot is a drift check only.
     pin_sent: bool = False
+    #: Whether graph expansion was asked for, and the region's own account of
+    #: what it walked (pheasant's ``expansion`` block: the settings in force,
+    #: ``seeds``, ``seeds_skipped`` and ``nodes``). ``None`` when not asked, or
+    #: when the region answered without one - recorded as absent, not as zero.
+    expand_sent: bool = False
+    expansion: dict[str, Any] | None = None
 
     @property
     def artifact_ids(self) -> list[str]:
@@ -197,6 +219,8 @@ class SearchResponse:
             "memory_enabled": self.request.memory.enabled,
             "snapshot_id": self.snapshot_id or self.request.snapshot_id,
             "pin_sent": self.pin_sent,
+            "expand_sent": self.expand_sent,
+            "expansion": dict(self.expansion) if self.expansion is not None else None,
             "as_of": self.request.as_of,
             "graph_generation": self.graph_generation,
             "latency_ms": self.latency_ms,
@@ -253,6 +277,10 @@ class Retriever:
     def supports_corpus_as_of(self) -> bool:
         return "as_of" in self._argument_map
 
+    @property
+    def supports_graph_expansion(self) -> bool:
+        return "expand" in self._argument_map
+
     def search(self, request: SearchRequest) -> SearchResponse:
         tool = self.capabilities.tool("search")
         arguments = request.as_arguments(
@@ -281,6 +309,10 @@ class Retriever:
             next_cursor=_first_str(body, "next_cursor", "cursor"),
             status=outcome.status,
             pin_sent=request.pin_sent(self._argument_map),
+            expand_sent=request.expand_sent(self._argument_map),
+            expansion=dict(body["expansion"])
+            if isinstance(body.get("expansion"), Mapping)
+            else None,
         )
 
     def describe(self) -> dict[str, Any]:
@@ -401,8 +433,11 @@ def normalise_results(
                 or _front_matter_source_id(text),
                 locator=_first_str(row, "locator", "section", "relative_path", "path")
                 or _first_str(provenance, "relative_path", "path"),
+                # A graph-arm node hit carries the node's own provenance, which
+                # may not name a source; the hit's top-level `source_id` does.
+                # Both are the *region's* name, and only ever fill this field.
                 region_source=_first_str(provenance, "source_id", "source_name")
-                or _first_str(row, "source_name"),
+                or _first_str(row, "source_name", "source_id"),
                 retrieval_arm=_first_str(row, "arm", "retrieval_arm", "retrieved_by", "matched_by"),
                 contributing_arms=[
                     str(a) for a in (row.get("contributing_arms") or row.get("arms") or [])
@@ -418,9 +453,40 @@ def normalise_results(
                 source_type=_first_str(row, "source_type")
                 or (str(provenance.get("source_type")) if provenance.get("source_type") else None),
                 title=_first_str(row, "title", "name"),
+                graph_neighbors=_neighbors(row),
             )
         )
     return results
+
+
+#: The neighbour fields a run keeps. Anything else the region attaches is
+#: left out rather than copied, so a record's shape is this list.
+_NEIGHBOR_FIELDS = (
+    "node_id",
+    "type",
+    "label",
+    "artifact_id",
+    "relative_path",
+    "depth",
+    "edge_types",
+    "via",
+)
+
+
+def _neighbors(row: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The hit's ``graph.neighbors``, projected to :data:`_NEIGHBOR_FIELDS`."""
+
+    graph = row.get("graph")
+    if not isinstance(graph, Mapping):
+        return []
+    neighbors = graph.get("neighbors")
+    if not isinstance(neighbors, Sequence) or isinstance(neighbors, str):
+        return []
+    return [
+        {name: neighbor[name] for name in _NEIGHBOR_FIELDS if name in neighbor}
+        for neighbor in neighbors
+        if isinstance(neighbor, Mapping) and neighbor.get("node_id")
+    ]
 
 
 def _preview(row: Mapping[str, Any]) -> str | None:

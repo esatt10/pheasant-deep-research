@@ -278,7 +278,8 @@ guessing. Heuristic name matching is off by default.
 The lab writes to a knowledge base and a source it owns. Use a namespace that
 holds nothing else: it submits documents and seals snapshots there.
 
-**What the region needs** (pheasant >= 0.12.6; checked against 0.12.16):
+**What the region needs** (pheasant >= 0.12.6; checked end to end against
+0.12.16, 0.13.0 and 0.13.1; the shipped pheasant file targets 0.13.1):
 
 * `readiness.enabled: true` — `submit_documents`, the receipts and snapshots
   live on the readiness plane;
@@ -287,9 +288,21 @@ holds nothing else: it submits documents and seals snapshots there.
   leaves registering that directory to the caller; the lab registers it before
   the first sync, and a region that refuses says so with this fix;
 * a `type: memory` source, for `P1`;
-* the API token in `PHEASANT_MCP_TOKEN` when `security.api_auth` is on.
+* the API token in `PHEASANT_API_TOKEN` when `security.api_auth` is on.
 
 `deploy/compose/answers/pheasant-lab.json` in pheasant-kb sets all four.
+
+**Graph neighbourhoods (optional).** Pheasant 0.13.1 can attach each hit's
+graph neighbourhood to a search (`expand`), and the shipped pheasant file maps
+it. Set `replay.graph_expansion` (`true`, a depth 1-3, or `{depth,
+max_neighbors, edge_types, exclude_edge_types}`) and every search call records `expand_sent`, the region's
+`expansion` block and each hit's `graph_neighbors`. It is recorded, not read:
+no arm's answer changes. On the fixture corpus a depth-1 walk reaches only each
+paper's own entities (authors, venues, genes); depth 2 reaches other papers
+through those shared entities, decoys included. `doctor` refuses a run that
+asks for expansion the pheasant file cannot send. Against pheasant
+0.12.6-0.13.0, unmap it (`--set argument_map.search.expand=null`, or delete the
+line): a mapped argument the region's search tool does not take fails `doctor`.
 
 **One evaluation per sealed snapshot.** `P1` writes memory into the region,
 and in pheasant a memory record is an indexed artifact — so it moves the
