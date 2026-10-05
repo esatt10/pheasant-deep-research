@@ -339,6 +339,42 @@ wrong here"* and *"this is ready to be measured"* are different sentences.
 
 ---
 
+## The console
+
+```bash
+make ui                                   # once: build the UI (needs Node 18+)
+uv run pheasant-lab serve                 # http://127.0.0.1:8770
+```
+
+A browser surface over everything above, in pheasant's own visual language:
+
+* **Configure** — a form over the YAML. Every change is a `--set`, shown as the
+  exact argv it will run; `plan` projects the cost as you edit, `doctor` runs
+  on demand, and a change that moves the config digest says so.
+* **Live** — a run as it happens, from its append-only trace: phases, the
+  swarm as a tree, a **constellation** (research branches with their sources
+  in orbit, coloured by custody, travelling to a Pheasant node drawn as
+  landing → index queue → indexed) and **swimlanes** (one per agent, the
+  region and the indexer), the raw event stream, budget, facet coverage and a
+  custody funnel. A replay scrubber folds the same trace at any earlier
+  sequence number.
+* **Region awareness** — on a role-split Pheasant a sync is *published*, and
+  until an indexer claims it the documents are accepted and not searchable.
+  The lab records that interval (`ingest.sync`, `ingest.barrier` and, where
+  the region offers `get_index_queue`, each task's claim state), and the
+  console shows it as its own state — a hatched "awaiting claim" bar, a
+  notice, an amber funnel column — rather than as an unexplained wait. The
+  top-bar chip asks the region's `/ready` and `/queue` directly.
+* **Runs** and **Reports** — every run directory, and its Markdown reports.
+
+Runs start as ordinary CLI child processes, so a run launched from a browser
+and one typed in a terminal leave identical traces, and closing the console
+does not stop a run. It binds loopback; it can start paid runs.
+
+`--set mock_claim_seconds=8` makes the offline mock behave like a fleet (a
+sync is queued and claimed eight seconds later), which is how the pre-claim
+path is exercised without a real region.
+
 ## Layout
 
 ```text
@@ -354,6 +390,8 @@ src/pheasant_lab/
   evaluation/     metric contract, proof, metrics, pairing, statistics, gates
   tracing/        events, spans, errors, lineage, DuckDB projection
   reports/        summary, arm comparison, regressions, refinements
+  console/        `pheasant-lab serve`: the live projection, launcher, region probe, HTTP
+ui/          the console's React app (built to ui/dist)
 runs/        run output (git-ignored; run content is user data)
 ```
 

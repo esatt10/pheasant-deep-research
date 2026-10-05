@@ -57,6 +57,7 @@ needs that the README does not carry.
 uv run pheasant-lab demo --config configs/demo.yaml   # offline, ~12s, free
 make check                                            # lint + schemas + tests
 uv run python scripts/export_schemas.py               # after changing a record shape
+make ui && uv run pheasant-lab serve                  # the console, http://127.0.0.1:8770
 ```
 
 ## 4. Design decisions worth knowing before you change something
@@ -134,6 +135,21 @@ uv run python scripts/export_schemas.py               # after changing a record 
   answer terms (which the matcher requires), and `_harden` rebuilds any matcher
   the question would satisfy anyway. The leakage checker is the independent
   net, not the only one.
+- **The console is a fold and a launcher, never a second runtime.**
+  `console/projection.py` builds the live view from `raw/*.jsonl` alone, in
+  Python, once - the browser renders the server's snapshot rather than
+  re-deriving it, because a second fold in TypeScript would drift. Runs are
+  CLI child processes (`console/launcher.py`), so a browser-started run and a
+  typed one leave identical traces. Nothing the console computes is a number a
+  report states; arm progress is counted, never scored (rule 1).
+- **The pre-claim interval is recorded, not inferred.** On a role-split
+  Pheasant `sync_source` answers `status: queued`; the lab emits
+  `ingest.sync` with that disposition, one `ingest.barrier` per acknowledge
+  poll, and - when the region offers `get_index_queue` (capability
+  `index_queue`, optional) - each task's claim state. A document is shown
+  `awaiting_claim` only on that evidence; silence never moves a document
+  forward. `index_queue` and `mock_claim_seconds` are left out of the config
+  digest: they change what a run reports, not what it measures.
 
 ## 5. Traps this repository has already fallen into
 
@@ -204,3 +220,21 @@ uv run python scripts/export_schemas.py               # after changing a record 
   the adapter sends only what the map declares (`pin_sent` records which), and
   preflight now checks every *configured* name rather than a static list that
   was written before the map existed.
+- **A run that prints nothing is a run the launcher could not find.** The
+  console first learnt a launch's run id from its output, and `demo` is
+  silent for the whole of a barrier wait - exactly when someone wants to
+  watch. The run directory is watched apart from the output now.
+- **A backoff can step over a whole state.** The barrier polls with doubling
+  backoff, so a claim that starts and finishes between two polls is never
+  observed as `claimed`. The indexer lane says "claim between polls" rather
+  than drawing the whole interval as a wait nobody serviced, and the test
+  fixture's claim window is sized against the backoff so every state is seen.
+- **A receipt's timestamp is its first one.** `ingest-receipts.jsonl`
+  re-appends a receipt as `indexed` carrying the time it was *accepted*, so a
+  replay that placed receipts by time showed documents indexed before the
+  sync that indexed them. A replay admits `indexed` only after it has folded
+  the crossed barrier, which is how the lab learnt it in the first place.
+- **Events and receipts are two files, read in either order.** Stamping
+  "awaiting claim" on documents when the queued sync arrived missed every
+  document whose acceptance was read afterwards. The claim state lives on the
+  model and is applied at snapshot time.

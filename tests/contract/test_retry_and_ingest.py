@@ -391,7 +391,11 @@ def test_the_shipped_example_config_resolves_against_a_real_pheasant():
     tools = _pheasant_tools()
     capabilities = resolve(config, tools)
     unusable = {r.name: r.reason for r in capabilities.resolutions.values() if not r.usable}
-    assert unusable == {}
+    # `get_index_queue` arrived after 0.13.1, so it is absent here - and it
+    # is optional, which is the property worth holding: an older region must
+    # still resolve, with the pre-claim interval reported as unknown.
+    assert unusable == {"index_queue": "'get_index_queue' is not in tools/list"}
+    assert capabilities.resolutions["index_queue"].required is False
     # pheasant >= 0.12.6 takes the pin on `search_context`, so P0 is pinned;
     # 0.13.1 takes `expand`, so graph expansion is one experiment setting away.
     search_arguments = set(tools["search_context"]["inputSchema"]["properties"])
@@ -423,7 +427,8 @@ def test_an_older_region_refuses_the_shipped_map_until_expand_is_unmapped(versio
     assert "expand" not in unmapped.argument_map["search"]
     capabilities = resolve(unmapped, tools)
     unusable = {r.name: r.reason for r in capabilities.resolutions.values() if not r.usable}
-    assert unusable == {}
+    # Optional and newer than either release; absent is the expected answer.
+    assert unusable == {"index_queue": "'get_index_queue' is not in tools/list"}
 
 
 def test_a_pin_the_region_does_not_accept_is_refused_at_preflight():

@@ -33,6 +33,7 @@ capabilities:
   snapshot_get: { tool: get_snapshot, required: false }
   describe_retrieval: { tool: describe_retrieval, required: false }
   record_evidence: { tool: record_evidence, required: false }
+  index_queue: { tool: get_index_queue, required: false }
 
 discovery:
   verify_configured_tool_exists: true

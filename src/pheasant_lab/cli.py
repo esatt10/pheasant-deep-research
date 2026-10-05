@@ -253,6 +253,7 @@ def _connect(session: Session, args: argparse.Namespace) -> None:
             # clean one. A shared region would make two demo runs disagree
             # about what they contain.
             state_path=session.paths.root / "mock-region.json",
+            claim_seconds=config.pheasant.mock_claim_seconds,
         )
         session.mock = server
         client = PheasantClient.in_process(
@@ -1213,6 +1214,44 @@ def cmd_demo(args: argparse.Namespace) -> int:
     return code
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    """The console: configure, launch and watch runs from a browser.
+
+    Loopback by default. It starts runs - paid ones, with the right config -
+    so binding it anywhere else is a decision to say out loud.
+    """
+
+    from .console.server import serve
+
+    project_root = Path(getattr(args, "project_root", None) or Path.cwd()).resolve()
+    config = load_config(
+        args.config, project_root=project_root, env_file=getattr(args, "env_file", ".env")
+    )
+    output_root = Path(args.output_root_dir or config.experiment.output_root)
+    if not output_root.is_absolute():
+        output_root = project_root / output_root
+    server = serve(
+        host=args.host,
+        port=args.port,
+        project_root=project_root,
+        output_root=output_root,
+        default_config=str(Path(args.config)),
+        ui_dist=Path(args.ui_dist) if args.ui_dist else None,
+    )
+    console = server.console  # type: ignore[attr-defined]
+    print(f"pheasant-lab console on http://{args.host}:{server.server_address[1]}")
+    print(f"runs: {output_root}")
+    if console.ui_dist is None:
+        print("UI not built: run `make ui`. The API is live at /api.")
+    try:
+        server.serve_forever(poll_interval=0.5)
+    except KeyboardInterrupt:  # pragma: no cover - interactive
+        print("console stopped; launched runs keep running")
+    finally:
+        server.server_close()
+    return EXIT_OK
+
+
 def _latest_run(args: argparse.Namespace) -> str:
     config = _resolve_config(args)
     root = Path(config.experiment.output_root)
@@ -1313,6 +1352,18 @@ def build_parser() -> argparse.ArgumentParser:
     demo.add_argument("--arms", default=None)
     demo.add_argument("--output-root", default=None)
     demo.set_defaults(func=cmd_demo)
+
+    serve_cmd = subparsers.add_parser(
+        "serve", help="the console: configure, launch and watch runs in a browser"
+    )
+    serve_cmd.add_argument("--config", default="configs/demo.yaml")
+    serve_cmd.add_argument("--env-file", default=".env")
+    serve_cmd.add_argument("--project-root", default=None)
+    serve_cmd.add_argument("--host", default="127.0.0.1")
+    serve_cmd.add_argument("--port", type=int, default=8770)
+    serve_cmd.add_argument("--runs", dest="output_root_dir", default=None)
+    serve_cmd.add_argument("--ui-dist", default=None, help="a built UI (default: ui/dist)")
+    serve_cmd.set_defaults(func=cmd_serve)
 
     return parser
 

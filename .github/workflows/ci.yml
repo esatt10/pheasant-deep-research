@@ -52,6 +52,14 @@ jobs:
           sed -n '/^```yaml$/,/^```$/p' "$RUN/reports/summary.md" | sed '1d;$d' >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
+      # The console's UI is a separate build; a type error in it is a broken
+      # console, so it is checked on every change like the Python is.
+      - name: Console UI typechecks and builds
+        run: |
+          cd ui
+          npm ci
+          npm run build
+
       - name: Upload the demo run
         if: always()
         uses: actions/upload-artifact@v4

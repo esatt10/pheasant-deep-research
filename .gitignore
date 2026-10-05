@@ -238,3 +238,8 @@ configs/pricing.yaml
 
 # uv
 .venv/
+
+# Console UI
+ui/node_modules/
+ui/dist/
+ui/*.tsbuildinfo

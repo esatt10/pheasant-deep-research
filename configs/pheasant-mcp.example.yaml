@@ -75,6 +75,14 @@ capabilities:
   record_evidence:
     tool: ${PHEASANT_TOOL_RECORD_EVIDENCE:-record_evidence}
     required: false
+  # Newer than pheasant 0.13.1 (absent there, which is fine). On a fleet `sync_source` answers `status: queued`:
+  # the sync was published, not run. While the ingest barrier waits, the lab
+  # reads this to report whether an indexer has claimed the task yet
+  # (`ingest.queue` events), rather than showing an unexplained wait.
+  # Observational only: it is left out of the config digest.
+  index_queue:
+    tool: ${PHEASANT_TOOL_INDEX_QUEUE:-get_index_queue}
+    required: false
 
 discovery:
   verify_configured_tool_exists: true
