@@ -13,14 +13,17 @@ file. Its job is to make the *plumbing* testable; the science needs the real
 region, which is why ``doctor`` refuses to treat ``mock`` as a live target.
 
 **Its wire shapes follow pheasant's, not this lab's wishes.** Every response
-here was checked against a running pheasant (0.12.16, 0.13.0 and
-0.13.1, which added ``expand``): receipts split into
+here was checked against a running pheasant (0.12.16, 0.13.0, 0.13.1, which
+added ``expand``, and 0.13.2, which added ``get_index_queue``): receipts split into
 ``accepted``/``rejected`` lists with a ``disposition``, acknowledgement as
 counts, a submission landing in a directory that must be registered as a
 source before ``sync_source`` will index it, hits carrying a capped preview
 rather than the passage, and ``get_file_summary`` keyed by path. A mock that
 is kinder than the server hides exactly the adapter bugs it exists to catch,
-which is how every one of those shapes once went unnoticed here.
+which is how every one of those shapes once went unnoticed here. With
+``claim_seconds`` above zero it is a role-split fleet: a sync - the memory
+source's included - is published, and nothing it covers is searchable until
+the simulated indexer has run it.
 
 Failure injection is first-class (``FaultPlan``) because the error contract is
 a thing this repository must test, and an error path nothing exercises is an
@@ -40,6 +43,7 @@ import uuid
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -75,6 +79,9 @@ class StoredDocument:
         return tokenize(self.text)
 
 
+MEMORY_SOURCE = "agent-memory"
+
+
 @dataclass
 class MemoryRecord:
     record_id: str
@@ -87,6 +94,9 @@ class MemoryRecord:
     supersedes: str | None = None
     superseded_by: str | None = None
     valid_until: str | None = None
+    #: A fleet publishes a memory record's sync rather than running it, so the
+    #: record exists before it is searchable (see `_tool_memory_write`).
+    indexed: bool = True
 
     @property
     def current(self) -> bool:
@@ -703,23 +713,7 @@ class MockPheasantServer:
             raise _Refusal(f"Unknown source: {name}")
         mode = str(arguments.get("mode") or "incremental")
         if self.claim_seconds > 0:
-            # pheasant's fleet answer (`PheasantTools._publish_sync`): the
-            # task id is content-addressed, so a repeat while one is
-            # outstanding is the same task rather than a second one.
-            task_id = (
-                "idx-"
-                + hashlib.sha256(f"{self.knowledge_base}\0{name}\0{mode}".encode()).hexdigest()[:24]
-            )
-            if task_id not in self.queue:
-                now = time.time()
-                self.queue[task_id] = {
-                    "source": name,
-                    "mode": mode,
-                    "enqueued": now,
-                    "claim_at": now + self.claim_seconds,
-                    "done_at": now + 2 * self.claim_seconds,
-                }
-            return {"source_id": name, "status": "queued", "task_id": task_id}
+            return self._publish(name, mode)
         newly = 0
         for document in self.documents.values():
             if document.source_name == name and not document.indexed:
@@ -735,6 +729,28 @@ class MockPheasantServer:
             "status": "healthy",
         }
 
+    def _publish(self, name: str, mode: str = "incremental") -> dict[str, Any]:
+        """pheasant's fleet answer (`PheasantTools._publish_sync`).
+
+        The task id is content-addressed, so a repeat while one is outstanding
+        is the same task rather than a second one.
+        """
+
+        task_id = (
+            "idx-"
+            + hashlib.sha256(f"{self.knowledge_base}\0{name}\0{mode}".encode()).hexdigest()[:24]
+        )
+        if task_id not in self.queue:
+            now = time.time()
+            self.queue[task_id] = {
+                "source": name,
+                "mode": mode,
+                "enqueued": now,
+                "claim_at": now + self.claim_seconds,
+                "done_at": now + 2 * self.claim_seconds,
+            }
+        return {"source_id": name, "status": "queued", "task_id": task_id}
+
     def _advance_queue(self) -> None:
         """Let simulated indexers finish what they claimed, by the clock."""
 
@@ -748,6 +764,9 @@ class MockPheasantServer:
                 for document in self.documents.values():
                     if document.source_name == task["source"]:
                         document.indexed = True
+                if task["source"] == MEMORY_SOURCE:
+                    for record in self.memory.values():
+                        record.indexed = True
                 self._generation += 1
                 del self.queue[task_id]
 
@@ -761,9 +780,12 @@ class MockPheasantServer:
             claimed = now >= float(task["claim_at"])
             if not claimed:
                 position += 1
+            enqueued = datetime.fromtimestamp(float(task["enqueued"]), tz=UTC).isoformat()
             tasks.append(
                 {
                     "task_id": task_id,
+                    "enqueued_at": enqueued,
+                    "visible_at": enqueued,
                     "source": task["source"],
                     "mode": task["mode"],
                     "state": "claimed" if claimed else "awaiting_claim",
@@ -952,7 +974,7 @@ class MockPheasantServer:
             return {
                 "record": self._record_payload(self.memory[record_id]),
                 "created": False,
-                "source": "agent-memory",
+                "source": MEMORY_SOURCE,
                 "outcome": "duplicate",
             }
         record = MemoryRecord(
@@ -971,12 +993,27 @@ class MockPheasantServer:
         self.memory[record_id] = record
         self._generation += 1
         # Pheasant nests the stored record rather than flattening it.
-        return {
+        payload: dict[str, Any] = {
             "record": self._record_payload(record),
             "created": True,
-            "source": "agent-memory",
+            "source": MEMORY_SOURCE,
             "outcome": "created",
         }
+        if arguments.get("sync"):
+            if self.claim_seconds > 0:
+                # A fleet publishes the memory source's sync, as it does any
+                # other (captured from pheasant 0.13.2): the record is stored
+                # and is not searchable until an indexer has run the task.
+                record.indexed = False
+                payload["sync"] = self._publish(MEMORY_SOURCE)
+            else:
+                payload["sync"] = {
+                    "source_id": MEMORY_SOURCE,
+                    "indexed_artifacts": 1,
+                    "skipped_artifacts": 0,
+                    "status": "healthy",
+                }
+        return payload
 
     @staticmethod
     def _record_payload(record: MemoryRecord) -> dict[str, Any]:
@@ -1089,6 +1126,8 @@ class MockPheasantServer:
     def _steering_terms(self) -> dict[str, Any]:
         terms: dict[str, Any] = {}
         for record in self.memory.values():
+            if not record.indexed:
+                continue
             if not record.current or record.kind not in {"alias", "preference", "exclusion"}:
                 continue
             if record.kind == "alias" and "->" in record.text:
@@ -1112,6 +1151,8 @@ class MockPheasantServer:
         wanted = set(tokenize(query))
         hits = []
         for record in self.memory.values():
+            if not record.indexed:
+                continue
             if not include_rules and record.kind != "fact":
                 continue
             if as_of is None and not record.current:

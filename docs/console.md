@@ -14,6 +14,11 @@ Every page is a real URL. Reloading `/configure`, `/live/<run>`,
 `/reports/<run>` or `/reports/<run>/traces/<agent>` reloads that page, and
 Configure keeps the overrides you made in this tab.
 
+Every page fits the window: a long form, a run list, a report or an expanded
+trace scrolls inside its own panel, while the plan, the agent list and the
+waterfall's time axis stay where they are. On a narrow or short window the
+pages fall back to scrolling as a whole.
+
 ## Configure
 
 A form over the YAML. Every change is a `--set`, shown as the exact command

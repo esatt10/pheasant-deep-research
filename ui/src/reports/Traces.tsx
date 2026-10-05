@@ -155,7 +155,7 @@ export function Traces({ runId, actorId }: { runId: string; actorId?: string }) 
         </div>
       </div>
 
-      <div className="traces__main">
+      <div className="traces__main fit-scroll">
         {error ? <div className="pill pill--danger" style={{ whiteSpace: "normal" }}>{error}</div> : null}
         <div className="card">
           <div className="card__head">

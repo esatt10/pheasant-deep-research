@@ -43,7 +43,7 @@ export function ReportsPage({ view = "reports" }: { view?: "reports" | "traces" 
   }, [runId, name, names]);
 
   return (
-    <div className="page" style={view === "traces" ? { maxWidth: 1560 } : undefined}>
+    <div className="page page--fit" style={view === "traces" ? { maxWidth: 1560 } : undefined}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <h1>Reports</h1>
         <select
@@ -70,8 +70,8 @@ export function ReportsPage({ view = "reports" }: { view?: "reports" | "traces" 
       {view === "traces" ? (
         runId ? <Traces runId={runId} actorId={actor} /> : <div className="card empty">No runs yet.</div>
       ) : (
-      <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", gap: 12, alignItems: "start" }}>
-        <div className="card" style={{ padding: 6 }}>
+      <div className="reports">
+        <div className="card fit-scroll" style={{ padding: 6 }}>
           {names.length === 0 ? <div className="muted small" style={{ padding: 8 }}>No reports yet — they are written by <code>report</code>.</div> : null}
           {names.map((n) => (
             <button key={n} className={`tnode${n === name ? " tnode--sel" : ""}`} onClick={() => setName(n)}>
@@ -79,7 +79,7 @@ export function ReportsPage({ view = "reports" }: { view?: "reports" | "traces" 
             </button>
           ))}
         </div>
-        <div className="card card__body markdown" dangerouslySetInnerHTML={{ __html: html }} />
+        <div className="card card__body markdown fit-scroll" dangerouslySetInnerHTML={{ __html: html }} />
       </div>
       )}
     </div>

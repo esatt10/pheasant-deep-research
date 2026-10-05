@@ -47,7 +47,7 @@ export function RunsPage() {
   };
 
   return (
-    <div className="page">
+    <div className="page page--fit">
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <h1>Runs</h1>
         <span className="muted">every run directory under the console's output root</span>
@@ -59,7 +59,7 @@ export function RunsPage() {
       {error ? <div className="pill pill--danger" style={{ whiteSpace: "normal" }}>{error}</div> : null}
 
       {launches.data && launches.data.length > 0 ? (
-        <div className="card">
+        <div className="card runs__launches">
           <div className="card__head">
             Launched from this console{" "}
             <span className="sub">detached processes — they keep running if the console stops, and it re-attaches on restart</span>
@@ -98,7 +98,7 @@ export function RunsPage() {
         </div>
       ) : null}
 
-      <div className="card">
+      <div className="card fit-scroll runs__table">
         <table className="table">
           <thead>
             <tr>

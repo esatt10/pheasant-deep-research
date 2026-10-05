@@ -410,28 +410,12 @@ class Ingestor:
         A failure here is an unknown, never a reason to fail the barrier.
         """
 
-        if not self.capabilities.has("index_queue"):
-            return None
-        try:
-            outcome = self.client.call(
-                self.capabilities.tool("index_queue"),
-                {self._kb_field: self.config.knowledge_base},
-                idempotent=True,
-                stage="index",
-            )
-        except Exception:
-            return None
-        payload = _as_mapping(outcome.result.payload() if outcome.result else {})
-        if payload.get("listing") != "complete":
-            return None
-        return [
-            {
-                key: task.get(key)
-                for key in ("task_id", "state", "waiting_seconds", "claimed_by", "position")
-            }
-            for task in payload.get("tasks") or []
-            if isinstance(task, dict) and task.get("source") == self.config.source_name
-        ]
+        return read_index_queue(
+            self.client,
+            self.capabilities,
+            {self._kb_field: self.config.knowledge_base},
+            source=self.config.source_name,
+        )
 
     def _emit(self, event_type: str, disposition: str, **payload: Any) -> None:
         if self.tracer is None:
@@ -609,3 +593,38 @@ def build_requests(
             )
         )
     return requests
+
+
+def read_index_queue(
+    client: Any,
+    capabilities: Any,
+    arguments: Mapping[str, Any],
+    *,
+    source: str,
+) -> list[dict[str, Any]] | None:
+    """``source``'s outstanding index tasks, or ``None`` when unknowable.
+
+    ``None`` covers a region without the tool, a failed call and a backend
+    that can count but not list (``listing: "unavailable"``): each is an
+    unknown, and an empty list would read as "nothing outstanding".
+    """
+
+    if not capabilities.has("index_queue"):
+        return None
+    try:
+        outcome = client.call(
+            capabilities.tool("index_queue"), dict(arguments), idempotent=True, stage="index"
+        )
+    except Exception:
+        return None
+    payload = _as_mapping(outcome.result.payload() if outcome.result else {})
+    if payload.get("listing") != "complete":
+        return None
+    return [
+        {
+            key: task.get(key)
+            for key in ("task_id", "state", "waiting_seconds", "claimed_by", "position")
+        }
+        for task in payload.get("tasks") or []
+        if isinstance(task, dict) and task.get("source") == source
+    ]

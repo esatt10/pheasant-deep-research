@@ -187,6 +187,15 @@ make ui && uv run pheasant-lab serve                  # the console, http://127.
   `awaiting_claim` only on that evidence; silence never moves a document
   forward. `index_queue` and `mock_claim_seconds` are left out of the config
   digest: they change what a run reports, not what it measures.
+- **P1 waits for its memory to be searchable.** A memory write on a fleet
+  answers `sync: {status: queued}` like any other sync (captured from 0.13.2),
+  and the record is not searchable until an indexer runs the task.
+  `MemorySeeder` keeps the queued task ids and, after seeding, polls
+  `get_index_queue` until they leave the listing (`memory.indexed`:
+  `indexed`, `timed_out`, `failed` for a dead task, `unknown` with no
+  complete listing). Anything but `indexed` becomes a limitation on the
+  report; the run is not refused, because the paired difference is still a
+  measurement of *something*, and the report says what.
 
 ## 5. Traps this repository has already fallen into
 
@@ -297,3 +306,11 @@ make ui && uv run pheasant-lab serve                  # the console, http://127.
   "awaiting claim" on documents when the queued sync arrived missed every
   document whose acceptance was read afterwards. The claim state lives on the
   model and is applied at snapshot time.
+- **P1 started 21 ms after its memory was written, and on a fleet that
+  memory was not yet searchable.** Standalone, `memory_write(sync=True)`
+  indexes in the call; role-split, it publishes the sync and returns. So `P1`
+  ran its first questions with no memory at all and `P1 - P0` understated the
+  treatment by however many questions beat the indexer - 57 against 59 of 63
+  memory hits between two otherwise identical runs. Found by running the lab
+  against a real fleet (0.13.2), not by the mock, which indexed memory
+  in-call regardless of `mock_claim_seconds` until it was taught otherwise.

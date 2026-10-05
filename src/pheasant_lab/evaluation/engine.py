@@ -353,6 +353,9 @@ class EvaluationEngine:
                 f"P1 was measured with {len(records)} memory record(s) seeded from the learned cohort's "
                 "first pass only"
             )
+            unconfirmed = getattr(self.memory_seeder, "limitation", None)
+            if unconfirmed:
+                self.result.limitations.append(unconfirmed)
         if self.query_tuner is not None and "P2" in self.config.arms:
             strategy = self.query_tuner.tune(first_pass, learned_question_ids=learned)
             context = self.arm_contexts.get("P2")

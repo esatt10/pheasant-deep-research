@@ -54,9 +54,12 @@ needs that the README does not carry.
 
 ```bash
 ./scripts/bootstrap.sh
-uv run pheasant-lab demo --config configs/demo.yaml   # offline, ~12s, free
+uv run pheasant-lab demo --config configs/demo.yaml   # offline, ~20s, free
+uv run pheasant-lab run --config configs/demo.yaml    # the supervised pipeline; --resume <run> carries one on
+uv run pheasant-lab draft-topic --config configs/demo.yaml --intent "…"  # draft a topic, writes nothing
 make check                                            # lint + schemas + tests
 uv run python scripts/export_schemas.py               # after changing a record shape
+make ui && uv run pheasant-lab serve                  # the console, http://127.0.0.1:8770
 ```
 
 ## 4. Design decisions worth knowing before you change something
@@ -134,6 +137,65 @@ uv run python scripts/export_schemas.py               # after changing a record 
   answer terms (which the matcher requires), and `_harden` rebuilds any matcher
   the question would satisfy anyway. The leakage checker is the independent
   net, not the only one.
+- **The console is a fold and a launcher, never a second runtime.**
+  `console/projection.py` builds the live view from `raw/*.jsonl` alone, in
+  Python, once - the browser renders the server's snapshot rather than
+  re-deriving it, because a second fold in TypeScript would drift. Runs are
+  CLI child processes (`console/launcher.py`), so a browser-started run and a
+  typed one leave identical traces. Nothing the console computes is a number a
+  report states; arm progress is counted, never scored (rule 1).
+- **The console writes one file, and only for topics.** A research topic is
+  content, not a setting, so it cannot be a `--set`; `console/topics.py`
+  writes the config's current topics plus the new one to
+  `configs/topics.local.yaml` (git-ignored) after validating with the same
+  `Topic` model, re-resolves the whole config against what it wrote, and the
+  run points at it with `--set experiment.topics_file=...`. The shipped topics
+  files are never rewritten, and the argv is still the whole story.
+- **Traces are joined, not recomputed.** `console/traces.py` attributes every
+  event and span to one actor (`agent_id`, else `arm_id`, else
+  orchestration), nests events by `span_id`, and joins an MCP log row to the
+  `mcp.tool.call` event that recorded it on `(tool, attempt, duration_ms)` -
+  the log carries no span id. An event whose span was never exported is
+  placed in its own actor's narrowest enclosing span (same question when both
+  carry one) and marked `placed: by_time`/`by_question`; otherwise it stays
+  loose. Prompts and completions are not recorded, only their digests,
+  tokens and spend, and the trace view says so.
+- **A run is its directory, and it survives the process running it.**
+  `raw/*.jsonl` is authoritative and append-only; `state.json` is a
+  checkpoint. Whole-file writes go through `lifecycle.durable_write_text`
+  (unique temp, `fsync`, rename, directory `fsync`), and `RunState.save`
+  runs `Tracer.sync` first, so no checkpoint names work the raw trace could
+  lose. A resumed `Tracer` cuts a torn final line into `integrity/torn/` and
+  records `run.repaired`. Collection checkpoints `collect_progress` after the
+  plan and after every round, and resumes from it over state rehydrated from
+  `raw/`. Evaluation reuses recorded answers by (arm, question, repetition).
+  `pheasant-lab run` (`supervisor.py`) runs each stage as a child and resumes
+  one that crashes. `docs/durability.md` has the whole table.
+- **A topic may carry an intent.** `Topic.intent` is the person's own words,
+  and the planner's brief on every run. It is left out of the digest while
+  unset, like every field added after runs existed. "Seed terms or an intent"
+  is enforced where a topic is *added* (`console/topics.py`), not at load,
+  because topics files with neither loaded before and must keep loading.
+  `draft-topic` (`orchestration/drafter.py`) proposes one from an intent
+  under its own reserve-first budget; under `replay` it is rule-based and
+  says so.
+- **The pre-claim interval is recorded, not inferred.** On a role-split
+  Pheasant `sync_source` answers `status: queued`; the lab emits
+  `ingest.sync` with that disposition, one `ingest.barrier` per acknowledge
+  poll, and - when the region offers `get_index_queue` (capability
+  `index_queue`, optional) - each task's claim state. A document is shown
+  `awaiting_claim` only on that evidence; silence never moves a document
+  forward. `index_queue` and `mock_claim_seconds` are left out of the config
+  digest: they change what a run reports, not what it measures.
+- **P1 waits for its memory to be searchable.** A memory write on a fleet
+  answers `sync: {status: queued}` like any other sync (captured from 0.13.2),
+  and the record is not searchable until an indexer runs the task.
+  `MemorySeeder` keeps the queued task ids and, after seeding, polls
+  `get_index_queue` until they leave the listing (`memory.indexed`:
+  `indexed`, `timed_out`, `failed` for a dead task, `unknown` with no
+  complete listing). Anything but `indexed` becomes a limitation on the
+  report; the run is not refused, because the paired difference is still a
+  measurement of *something*, and the report says what.
 
 ## 5. Traps this repository has already fallen into
 
@@ -204,3 +266,51 @@ uv run python scripts/export_schemas.py               # after changing a record 
   the adapter sends only what the map declares (`pin_sent` records which), and
   preflight now checks every *configured* name rather than a static list that
   was written before the map existed.
+- **A run that prints nothing is a run the launcher could not find.** The
+  console first learnt a launch's run id from its output, and `demo` is
+  silent for the whole of a barrier wait - exactly when someone wants to
+  watch. The run directory is watched apart from the output now.
+- **A backoff can step over a whole state.** The barrier polls with doubling
+  backoff, so a claim that starts and finishes between two polls is never
+  observed as `claimed`. The indexer lane says "claim between polls" rather
+  than drawing the whole interval as a wait nobody serviced, and the test
+  fixture's claim window is sized against the backoff so every state is seen.
+- **A receipt's timestamp is its first one.** `ingest-receipts.jsonl`
+  re-appends a receipt as `indexed` carrying the time it was *accepted*, so a
+  replay that placed receipts by time showed documents indexed before the
+  sync that indexed them. A replay admits `indexed` only after it has folded
+  the crossed barrier, which is how the lab learnt it in the first place.
+- **A span id on an event is not a span in `spans.jsonl`.** Events emitted on
+  a worker thread (an arm's MCP calls and model calls, most orchestration
+  bookkeeping) carry a span id the tracer never exported, so nesting by
+  `span_id` alone left every arm event outside its question's span. The trace
+  view places them by time and question, and says it did.
+- **A drag ends in a click.** Panning a canvas by dragging across a node
+  selected that node on release. `components/zoom.tsx` swallows the click
+  after a real drag, in the capture phase so no node handler sees it.
+- **An unhandled exception exited `1`, which already meant "completed, and a
+  decision failed".** A supervisor could not tell a crash to resume from a
+  result to keep. Crashes exit `3` now; `1` stays a result.
+- **A pipe is a leash.** The console read its children's output through a
+  pipe, so a console that died took every run with it at the child's next
+  `print` (`BrokenPipeError`), contradicting the README's "closing the
+  console does not stop a run". Children get their own session and a log
+  file now, and launch records are files a restarted console re-attaches to.
+- **A resumed process knew only its own receipts.** Documents the dead
+  process submitted were never acknowledged and stayed `accepted` forever:
+  searchable in the region, counted as never indexed. `ReceiptLedger.restore`
+  rebuilds the ledger from `ingest-receipts.jsonl`. Found by comparing a
+  crashed-and-resumed run to a clean one, the property the durability tests
+  now assert.
+- **Events and receipts are two files, read in either order.** Stamping
+  "awaiting claim" on documents when the queued sync arrived missed every
+  document whose acceptance was read afterwards. The claim state lives on the
+  model and is applied at snapshot time.
+- **P1 started 21 ms after its memory was written, and on a fleet that
+  memory was not yet searchable.** Standalone, `memory_write(sync=True)`
+  indexes in the call; role-split, it publishes the sync and returns. So `P1`
+  ran its first questions with no memory at all and `P1 - P0` understated the
+  treatment by however many questions beat the indexer - 57 against 59 of 63
+  memory hits between two otherwise identical runs. Found by running the lab
+  against a real fleet (0.13.2), not by the mock, which indexed memory
+  in-call regardless of `mock_claim_seconds` until it was taught otherwise.

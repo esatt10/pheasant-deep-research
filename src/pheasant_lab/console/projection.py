@@ -279,7 +279,7 @@ class LiveModel:
             self._sync(payload, at)
         elif kind == "ingest.barrier":
             self._barrier(payload, at)
-        elif kind in {"memory.seeded", "tuning.strategy"}:
+        elif kind in {"memory.seeded", "memory.indexed", "tuning.strategy"}:
             self._tick("orchestrator", at, kind.split(".")[0], kind)
 
     def apply_span(self, span: dict[str, Any]) -> None:

@@ -161,14 +161,14 @@ export function ConfigurePage({ config, onConfig }: { config?: string; onConfig:
   };
 
   return (
-    <div className="page" style={{ maxWidth: 1400 }}>
+    <div className="page page--fit" style={{ maxWidth: 1400 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <h1>Configure</h1>
         <span className="muted">a form over the YAML — every change is a <code>--set</code></span>
       </div>
       {error ? <div className="toast toast--danger" style={{ boxShadow: "none" }}><span className="toast__icon">!</span><div><b>Refused</b><span className="soft">{error}</span></div></div> : null}
       <div className="cfg">
-        <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 0 }}>
+        <div className="fit-scroll" style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 0 }}>
           <div className="card">
             <div className="card__head">Experiment</div>
             <div className="card__body grid3">
@@ -318,7 +318,7 @@ export function ConfigurePage({ config, onConfig }: { config?: string; onConfig:
           </div>
         </div>
 
-        <div className="sticky">
+        <div className="sticky fit-scroll">
           <div className="card">
             <div className="card__head">Plan <span className="sub">worst case, no model or ingest call</span></div>
             <div className="card__body">

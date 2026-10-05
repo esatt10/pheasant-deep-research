@@ -367,7 +367,7 @@ def _shipped_pheasant_file(environ: dict[str, str] | None = None):
     return PheasantFile.model_validate(interpolate(body, environ or {}, []))
 
 
-def _pheasant_tools(version: str = "0.13.1") -> dict:
+def _pheasant_tools(version: str = "0.13.2") -> dict:
     import json
     from pathlib import Path
 
@@ -378,7 +378,7 @@ def _pheasant_tools(version: str = "0.13.1") -> dict:
 def test_the_shipped_example_config_resolves_against_a_real_pheasant():
     """A regression guard on the configuration itself, against the real thing.
 
-    The schemas are pheasant 0.13.1's own ``tools/list``, captured from a
+    The schemas are pheasant 0.13.2's own ``tools/list``, captured from a
     running region rather than written down, so this fails when the shipped
     map names a tool or an argument the region does not have - including a
     pin it does not accept, which would make a run *look* pinned. The mock
@@ -391,16 +391,27 @@ def test_the_shipped_example_config_resolves_against_a_real_pheasant():
     tools = _pheasant_tools()
     capabilities = resolve(config, tools)
     unusable = {r.name: r.reason for r in capabilities.resolutions.values() if not r.usable}
-    # `get_index_queue` arrived after 0.13.1, so it is absent here - and it
-    # is optional, which is the property worth holding: an older region must
-    # still resolve, with the pre-claim interval reported as unknown.
-    assert unusable == {"index_queue": "'get_index_queue' is not in tools/list"}
-    assert capabilities.resolutions["index_queue"].required is False
+    assert unusable == {}
     # pheasant >= 0.12.6 takes the pin on `search_context`, so P0 is pinned;
     # 0.13.1 takes `expand`, so graph expansion is one experiment setting away.
     search_arguments = set(tools["search_context"]["inputSchema"]["properties"])
     assert {"snapshot_id", "as_of", "expand"} <= set(configured_arguments(config, "search"))
     assert set(configured_arguments(config, "search")) <= search_arguments
+
+
+def test_a_0_13_1_region_resolves_without_the_index_queue():
+    """``get_index_queue`` arrived in 0.13.2, and it is optional.
+
+    That is the property worth holding: an older region still resolves, with
+    the pre-claim interval and P1's memory indexing reported as unknown.
+    """
+
+    from pheasant_lab.pheasant.capabilities import resolve
+
+    capabilities = resolve(_shipped_pheasant_file(), _pheasant_tools("0.13.1"))
+    unusable = {r.name: r.reason for r in capabilities.resolutions.values() if not r.usable}
+    assert unusable == {"index_queue": "'get_index_queue' is not in tools/list"}
+    assert capabilities.resolutions["index_queue"].required is False
 
 
 @pytest.mark.parametrize("version", ["0.12.16", "0.13.0"])

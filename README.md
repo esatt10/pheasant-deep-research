@@ -279,7 +279,8 @@ The lab writes to a knowledge base and a source it owns. Use a namespace that
 holds nothing else: it submits documents and seals snapshots there.
 
 **What the region needs** (pheasant >= 0.12.6; checked end to end against
-0.12.16, 0.13.0 and 0.13.1; the shipped pheasant file targets 0.13.1):
+0.12.16, 0.13.0, 0.13.1 and 0.13.2, the last both standalone and role-split;
+the shipped pheasant file targets 0.13.2):
 
 * `readiness.enabled: true` — `submit_documents`, the receipts and snapshots
   live on the readiness plane;
@@ -291,6 +292,14 @@ holds nothing else: it submits documents and seals snapshots there.
 * the API token in `PHEASANT_API_TOKEN` when `security.api_auth` is on.
 
 `deploy/compose/answers/pheasant-lab.json` in pheasant-kb sets all four.
+
+**A role-split region (fleet).** There `sync_source` and the memory write's
+sync are *published*, not run, and nothing is searchable until an indexer
+claims the task. The lab waits for both: the ingest barrier polls until every
+document is indexed, and from pheasant 0.13.2 (`get_index_queue`) it reports
+each task's claim state while it waits and holds `P1` until its memory has
+left the queue (`memory.indexed`). Against an older fleet the memory wait
+cannot be confirmed, and `P1`'s report says so as a limitation.
 
 **Graph neighbourhoods (optional).** Pheasant 0.13.1 can attach each hit's
 graph neighbourhood to a search (`expand`), and the shipped pheasant file maps

@@ -97,6 +97,20 @@ def test_the_barrier_reports_the_claim_before_it_crosses(fleet_run: Path) -> Non
     assert barrier[-1]["status"] == "succeeded"
 
 
+def test_p1_waits_for_its_memory_to_be_indexed(fleet_run: Path) -> None:
+    """A fleet publishes the memory sync too; P1 must not start before it lands."""
+
+    (indexed,) = _events(fleet_run, "memory.indexed")
+    assert indexed["payload"]["outcome"] == "indexed"
+    assert indexed["payload"]["tasks"], "the memory sync was not queued"
+    first_p1 = min(
+        row["sequence"]
+        for row in _events(fleet_run, "arm.answered")
+        if row["payload"].get("arm_id") == "P1" or row.get("arm_id") == "P1"
+    )
+    assert indexed["sequence"] < first_p1
+
+
 def test_a_standalone_region_reports_an_in_call_sync(demo_run: tuple[Path, str]) -> None:
     run, _ = demo_run
     (sync,) = _events(run, "ingest.sync")
