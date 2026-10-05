@@ -12,7 +12,7 @@ retrieval failure as a corpus gap.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any
 
 from ..lifecycle import isonow
@@ -98,6 +98,35 @@ class ReceiptLedger:
     def __init__(self) -> None:
         self._by_key: dict[str, IngestReceipt] = {}
         self.submitted_keys: set[str] = set()
+
+    @classmethod
+    def restore(
+        cls,
+        receipt_rows: Iterable[Mapping[str, Any]],
+        request_rows: Iterable[Mapping[str, Any]] = (),
+    ) -> ReceiptLedger:
+        """The ledger a previous process of this run held, from the raw trace.
+
+        A resumed run must cross the index barrier for documents the *dead*
+        process submitted too. Without this the new process only knows its own
+        submissions, and everything submitted before the crash stays
+        ``accepted`` forever: searchable in the region, invisible to the
+        barrier, and counted as never indexed.
+        """
+
+        ledger = cls()
+        for row in request_rows:
+            if row.get("idempotency_key"):
+                ledger.note_submission(str(row["idempotency_key"]))
+        names = {f.name for f in fields(IngestReceipt)} - {"raw"}
+        for row in fold_receipts(receipt_rows).values():
+            if not row.get("idempotency_key"):
+                continue
+            receipt = IngestReceipt(
+                **{k: v for k, v in row.items() if k in names}  # type: ignore[arg-type]
+            )
+            ledger._by_key[receipt.idempotency_key] = receipt
+        return ledger
 
     def note_submission(self, idempotency_key: str) -> None:
         """Record that a submission was *attempted* under this key.

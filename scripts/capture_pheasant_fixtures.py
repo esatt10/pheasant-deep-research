@@ -15,6 +15,12 @@ What the region needs before a capture:
   because ``search_context`` and ``get_file_summary`` are captured over the
   real fixture literature, not over the two documents submitted here.
 
+``--queued-sync`` (pheasant >= 0.13.2, a role-split region, **no indexer
+running**) also registers the scratch submission's landing directory and
+syncs it, so ``sync_source`` answers ``queued`` and ``get_index_queue`` is
+captured holding an unclaimed task: the pre-claim interval's two shapes.
+Without it, ``get_index_queue`` is captured as the region answers it now.
+
 It writes to the region: one submission under ``fixture-wire`` and one memory
 record. Use a scratch region.
 
@@ -56,6 +62,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="fixture suffix; defaults to the version the server reports. Use a "
         "local-version suffix (0.13.1+abc1234) for an unreleased build.",
+    )
+    parser.add_argument(
+        "--queued-sync",
+        action="store_true",
+        help="also register and sync the scratch submission, to capture a queued sync and an "
+        "unclaimed index task (a role-split region with no indexer running)",
     )
     parser.add_argument(
         "--tools-only",
@@ -173,6 +185,28 @@ def main(argv: list[str] | None = None) -> int:
             "sync": True,
         },
     )
+    if "get_index_queue" in session.tools:
+        if args.queued_sync:
+            responses["register_source"] = call(
+                "register_source",
+                {
+                    "knowledge_base": KNOWLEDGE_BASE,
+                    "name": "fixture-wire",
+                    "source_type": "document_folder",
+                    "path": responses["submit_documents"]["directory"],
+                    "include": ["**/*"],
+                },
+            )
+            responses["sync_source_queued"] = call(
+                "sync_source", {"knowledge_base": KNOWLEDGE_BASE, "source_name": "fixture-wire"}
+            )
+        responses["get_index_queue"] = call("get_index_queue", {"knowledge_base": KNOWLEDGE_BASE})
+    if args.queued_sync:
+        responses["note"] += (
+            " Role-split region: an api replica with a graph-service replica and a local index "
+            "queue, no indexer running during the capture, so every sync - the memory "
+            "write's included - is queued and the index tasks are unclaimed."
+        )
     _write(FIXTURES / f"responses-{label}.json", responses, _rewrites(args))
     return 0
 

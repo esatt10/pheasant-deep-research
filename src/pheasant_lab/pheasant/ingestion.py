@@ -309,7 +309,9 @@ class Ingestor:
             idempotent=False,
             stage="index",
         )
-        return _as_mapping(outcome.result.payload() if outcome.result else {})
+        payload = _as_mapping(outcome.result.payload() if outcome.result else {})
+        self._emit("ingest.sync", sync_disposition(payload), mode=mode, region=payload)
+        return payload
 
     def acknowledge(
         self, submission_id: str | None = None, *, wait_seconds: float | None = None
@@ -338,7 +340,10 @@ class Ingestor:
             self.config.timeout_seconds if wait_seconds is None else wait_seconds
         )
         backoff = max(0.05, self.config.retry_backoff_seconds)
+        started = self._clock.monotonic()
+        polls = 0
         while True:
+            polls += 1
             outcome = self.client.call(
                 self.capabilities.tool("ingest_acknowledge"),
                 arguments,
@@ -359,14 +364,77 @@ class Ingestor:
             if not listed:
                 self._refresh(submission_id)
             pending = payload.get("still_accepted")
+            waited = round(self._clock.monotonic() - started, 3)
             if not isinstance(pending, int) or pending <= 0:
+                self._emit(
+                    "ingest.barrier",
+                    "crossed",
+                    poll=polls,
+                    waited_seconds=waited,
+                    acknowledged=payload.get("acknowledged"),
+                    still_accepted=pending if isinstance(pending, int) else 0,
+                )
                 break
+            queue = self.index_queue()
             if self._clock.monotonic() >= deadline:
                 payload["barrier"] = "timed_out"
+                self._emit(
+                    "ingest.barrier",
+                    "timed_out",
+                    poll=polls,
+                    waited_seconds=waited,
+                    acknowledged=payload.get("acknowledged"),
+                    still_accepted=pending,
+                    queue=queue,
+                )
                 break
+            self._emit(
+                "ingest.barrier",
+                "waiting",
+                poll=polls,
+                waited_seconds=waited,
+                acknowledged=payload.get("acknowledged"),
+                still_accepted=pending,
+                queue=queue,
+            )
             self._clock.sleep(min(backoff, self.config.retry_backoff_max_seconds))
             backoff *= 2
         return payload
+
+    def index_queue(self) -> list[dict[str, Any]] | None:
+        """This source's outstanding index tasks, or ``None`` when unknowable.
+
+        Only read while the barrier waits, and only when the region offers
+        it: it is what turns "still_accepted is 4" into "no indexer has
+        claimed the sync yet" — two waits that call for different responses.
+        A failure here is an unknown, never a reason to fail the barrier.
+        """
+
+        return read_index_queue(
+            self.client,
+            self.capabilities,
+            {self._kb_field: self.config.knowledge_base},
+            source=self.config.source_name,
+        )
+
+    def _emit(self, event_type: str, disposition: str, **payload: Any) -> None:
+        if self.tracer is None:
+            return
+        status = {
+            "crossed": "succeeded",
+            "completed": "succeeded",
+            "timed_out": "failed",
+            "refused": "failed",
+        }.get(disposition, "partial")
+        self.tracer.emit(
+            event_type,
+            status=status,
+            payload={
+                "disposition": disposition,
+                "source_name": self.config.source_name,
+                **{k: v for k, v in payload.items() if v is not None},
+            },
+        )
 
     def _refresh(self, submission_id: str | None) -> None:
         """Read this process's receipts back from the region and fold them."""
@@ -464,6 +532,23 @@ class Ingestor:
         return _as_mapping(outcome.result.payload() if outcome.result else {})
 
 
+def sync_disposition(payload: Mapping[str, Any]) -> str:
+    """What a sync call actually did, in pheasant's own words.
+
+    Only a result carrying counts ran here. On a fleet the call *publishes*
+    (``queued``) and an indexer claims it later; ``already_syncing`` means
+    another job holds the source. Treating either as "indexed" is how a
+    barrier gets blamed for a wait the region announced up front.
+    """
+
+    status = str(payload.get("status") or "").lower()
+    if status in {"queued", "already_syncing", "syncing"}:
+        return status
+    if "skipped" in payload:
+        return "skipped"
+    return "completed"
+
+
 def _as_mapping(payload: Any) -> dict[str, Any]:
     return dict(payload) if isinstance(payload, Mapping) else {"raw": payload}
 
@@ -508,3 +593,38 @@ def build_requests(
             )
         )
     return requests
+
+
+def read_index_queue(
+    client: Any,
+    capabilities: Any,
+    arguments: Mapping[str, Any],
+    *,
+    source: str,
+) -> list[dict[str, Any]] | None:
+    """``source``'s outstanding index tasks, or ``None`` when unknowable.
+
+    ``None`` covers a region without the tool, a failed call and a backend
+    that can count but not list (``listing: "unavailable"``): each is an
+    unknown, and an empty list would read as "nothing outstanding".
+    """
+
+    if not capabilities.has("index_queue"):
+        return None
+    try:
+        outcome = client.call(
+            capabilities.tool("index_queue"), dict(arguments), idempotent=True, stage="index"
+        )
+    except Exception:
+        return None
+    payload = _as_mapping(outcome.result.payload() if outcome.result else {})
+    if payload.get("listing") != "complete":
+        return None
+    return [
+        {
+            key: task.get(key)
+            for key in ("task_id", "state", "waiting_seconds", "claimed_by", "position")
+        }
+        for task in payload.get("tasks") or []
+        if isinstance(task, dict) and task.get("source") == source
+    ]

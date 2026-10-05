@@ -56,5 +56,13 @@ replay:  ## Rebuild projections and metrics from raw events (RUN=<run_id>)
 report:  ## Render Markdown/CSV/JSON reports (RUN=<run_id>)
 	$(UV) run pheasant-lab report --run $(RUN)
 
+.PHONY: ui
+ui:  ## Build the console UI (ui/dist), served by `pheasant-lab serve`
+	cd ui && npm ci && npm run build
+
+.PHONY: console
+console:  ## Start the console on http://127.0.0.1:8770 (build the UI first: make ui)
+	$(UV) run pheasant-lab serve --config configs/demo.yaml
+
 .PHONY: check
 check: lint schemas test  ## Everything CI runs

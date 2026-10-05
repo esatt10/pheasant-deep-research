@@ -279,7 +279,8 @@ The lab writes to a knowledge base and a source it owns. Use a namespace that
 holds nothing else: it submits documents and seals snapshots there.
 
 **What the region needs** (pheasant >= 0.12.6; checked end to end against
-0.12.16, 0.13.0 and 0.13.1; the shipped pheasant file targets 0.13.1):
+0.12.16, 0.13.0, 0.13.1 and 0.13.2, the last both standalone and role-split;
+the shipped pheasant file targets 0.13.2):
 
 * `readiness.enabled: true` — `submit_documents`, the receipts and snapshots
   live on the readiness plane;
@@ -291,6 +292,14 @@ holds nothing else: it submits documents and seals snapshots there.
 * the API token in `PHEASANT_API_TOKEN` when `security.api_auth` is on.
 
 `deploy/compose/answers/pheasant-lab.json` in pheasant-kb sets all four.
+
+**A role-split region (fleet).** There `sync_source` and the memory write's
+sync are *published*, not run, and nothing is searchable until an indexer
+claims the task. The lab waits for both: the ingest barrier polls until every
+document is indexed, and from pheasant 0.13.2 (`get_index_queue`) it reports
+each task's claim state while it waits and holds `P1` until its memory has
+left the queue (`memory.indexed`). Against an older fleet the memory wait
+cannot be confirmed, and `P1`'s report says so as a limitation.
 
 **Graph neighbourhoods (optional).** Pheasant 0.13.1 can attach each hit's
 graph neighbourhood to a search (`expand`), and the shipped pheasant file maps
@@ -339,6 +348,105 @@ wrong here"* and *"this is ready to be measured"* are different sentences.
 
 ---
 
+## The console
+
+```bash
+make ui                                   # once: build the UI (needs Node 18+)
+uv run pheasant-lab serve                 # http://127.0.0.1:8770
+```
+
+A browser surface over everything above, in pheasant's own visual language.
+The full tour is [docs/console.md](docs/console.md).
+
+![The live view: a run's swarm, its region, its swimlanes and its event stream](docs/images/live-claimed.png)
+
+* **Configure** — a form over the YAML. Every change is a `--set`, shown as the
+  exact command it will run; `plan` projects the cost as you edit, `doctor`
+  runs on demand, and a change that moves the config digest says so.
+* **Research topics** — start from an **intent** (what you want to find out,
+  in your own words), from seed terms, or both. **Draft from intent** asks the
+  planner's model (`pheasant-lab draft-topic`, under its own small budget) for
+  a title, seed terms and facets to edit. Saving writes the current topics
+  plus the new one to `configs/topics.local.yaml` (git-ignored; the shipped
+  topics files are never rewritten). The intent is kept as the planner's
+  brief on every run.
+
+  ![Drafting a topic from an intent](docs/images/topic-intent-drafted.png)
+
+* **Live** — a run as it happens, from its append-only trace: phases, the
+  swarm as a tree, a **constellation** (research branches with their sources
+  in orbit, coloured by custody, travelling to a Pheasant node drawn as
+  landing → index queue → indexed) and **swimlanes** (one per agent, the
+  region and the indexer), the raw event stream, budget, facet coverage and a
+  custody funnel. Every visual zooms, pans and fits. A replay scrubber folds
+  the same trace at any earlier sequence number.
+* **Region awareness** — on a role-split Pheasant a sync is *published*, and
+  until an indexer claims it the documents are accepted and not searchable.
+  The lab records that interval (`ingest.sync`, `ingest.barrier` and, where
+  the region offers `get_index_queue`, each task's claim state). The console
+  shows it as its own state — a hatched "awaiting claim" bar, a notice, an
+  amber funnel column — rather than as an unexplained wait.
+
+  ![Pre-claim: queued, and no indexer has claimed it yet](docs/images/live-preclaim.png)
+
+* **Agent traces** (Reports → Agent traces) — every actor's whole record: the
+  orchestration, each research branch and each arm. Each trace shows:
+  * a waterfall of its span tree, with every event in the span that recorded it;
+  * each MCP call's request and response, as the region answered;
+  * for an arm, its question, answer, claims and reads;
+  * for a branch, the claims it extracted.
+
+  ![An arm's trace: its answer, and the MCP call behind it](docs/images/traces-answer-mcp.png)
+
+* **Runs** — every run directory. **Launch run** and **Resume** start the
+  supervised pipeline detached: closing or restarting the console does not
+  stop a run, and an interrupted one resumes from its checkpoint.
+
+Every page is a real URL, so a reload lands where it was. The console binds
+loopback because it can start paid runs.
+
+`--set mock_claim_seconds=8` makes the offline mock behave like a fleet (a
+sync is queued and claimed eight seconds later). That is how the pre-claim
+path is exercised without a real region.
+
+## Persistence and durability
+
+**What persists a run:** its directory under `runs/`, and nothing else. No
+database, no broker, no service holds state a run needs.
+
+* `raw/*.jsonl` is the authoritative record and is append-only: events,
+  spans, errors, the MCP transcript, sources, claims, receipts, questions,
+  answers and proof.
+* `state.json` is a checkpoint: completed stages, collection progress at its
+  last round boundary, and the budget.
+* `run-manifest.json` records the config digest, models and prompts.
+* Metrics, reports and the DuckDB projection are derived, and rebuild from
+  `raw/`.
+* The console keeps its launch records as files under `runs/.console/`.
+
+**How it survives failure:**
+
+* Whole-file writes are atomic and `fsync`ed.
+* Every checkpoint first `fsync`s the raw files it depends on.
+* A line torn by a crash mid-append is cut, kept in `integrity/torn/`, and
+  recorded as a `run.repaired` event.
+* Transient model errors (`429`, `5xx`, timeouts) are retried with backoff.
+* Collection resumes from its last round boundary over state rehydrated from
+  `raw/`.
+* Evaluation reuses every answer it already recorded.
+* `pheasant-lab run` drives the whole pipeline and resumes any stage that
+  crashes:
+
+```bash
+pheasant-lab run --config configs/experiment.yaml --topic <id>    # a new run
+pheasant-lab run --config configs/experiment.yaml --resume <run>  # carry one on
+```
+
+A test kills the real CLI mid-collection and mid-evaluation, the way
+`SIGKILL` does. It asserts the resumed run reaches the same corpus and the
+same metrics as one that never crashed. Details, the failure table and what
+this does not cover are in [docs/durability.md](docs/durability.md).
+
 ## Layout
 
 ```text
@@ -354,6 +462,11 @@ src/pheasant_lab/
   evaluation/     metric contract, proof, metrics, pairing, statistics, gates
   tracing/        events, spans, errors, lineage, DuckDB projection
   reports/        summary, arm comparison, regressions, refinements
+  console/        `pheasant-lab serve`: the live projection, launcher, region probe, HTTP,
+                  topics, per-agent traces
+  supervisor.py   `pheasant-lab run`: the pipeline, resuming stages that crash
+ui/          the console's React app (built to ui/dist)
+docs/        the console tour and the durability guarantees, with screenshots
 runs/        run output (git-ignored; run content is user data)
 ```
 

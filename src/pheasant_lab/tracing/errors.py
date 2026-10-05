@@ -250,5 +250,8 @@ class ErrorSink:
             totals[record.error_class] = totals.get(record.error_class, 0) + 1
         return dict(sorted(totals.items()))
 
+    def sync(self) -> None:
+        self._writer.sync()
+
     def close(self) -> None:
         self._writer.close()

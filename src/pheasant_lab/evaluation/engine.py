@@ -101,6 +101,7 @@ class EvaluationEngine:
         reconcile: Mapping[str, Any] | None = None,
         receipt_rate: tuple[int, int] = (0, 0),
         limitations: Sequence[str] = (),
+        recorded_answers: Sequence[Mapping[str, Any]] = (),
     ) -> None:
         self.config = config
         self.run_id = run_id
@@ -118,6 +119,21 @@ class EvaluationEngine:
         self.reconcile = dict(reconcile or {})
         self.receipt_rate = receipt_rate
         self.result = EvaluationResult()
+        # Answers a previous, interrupted evaluation already paid for, by
+        # (arm, question, repetition). Reused rather than asked again: the
+        # answer was recorded whole, and asking again would spend twice and
+        # could answer differently. A failed answer is not reused.
+        self.recorded: dict[tuple[str, str, int], dict[str, Any]] = {}
+        for row in recorded_answers:
+            if row.get("status") == "failed":
+                continue
+            key = (
+                str(row.get("arm_id")),
+                str(row.get("question_id")),
+                int(row.get("repetition") or 1),
+            )
+            self.recorded[key] = dict(row)
+        self.reused = 0
         # Limitations the caller established before the batch started - what
         # the region could not do, rather than what the batch found.
         self.result.limitations.extend(limitations)
@@ -196,6 +212,11 @@ class EvaluationEngine:
         return first_pass
 
     def _answer(self, arm: Arm, question: Any, repetition: int) -> dict[str, Any]:
+        reused = self.recorded.get((arm.arm_id, question.question_id, repetition))
+        if reused is not None:
+            self.reused += 1
+            self._record_proof(question, reused)
+            return reused
         try:
             answer = arm.answer(question, repetition=repetition)
             record = answer.as_record(store_text=self.config.privacy.store_response_text)
@@ -332,6 +353,9 @@ class EvaluationEngine:
                 f"P1 was measured with {len(records)} memory record(s) seeded from the learned cohort's "
                 "first pass only"
             )
+            unconfirmed = getattr(self.memory_seeder, "limitation", None)
+            if unconfirmed:
+                self.result.limitations.append(unconfirmed)
         if self.query_tuner is not None and "P2" in self.config.arms:
             strategy = self.query_tuner.tune(first_pass, learned_question_ids=learned)
             context = self.arm_contexts.get("P2")

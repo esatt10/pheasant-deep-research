@@ -527,6 +527,11 @@ class PheasantFile(_Model):
     capabilities: dict[str, CapabilitySpec] = Field(default_factory=dict)
     discovery: DiscoverySection = Field(default_factory=DiscoverySection)
     argument_map: dict[str, Any] = Field(default_factory=dict)
+    #: Mock transport only. Above zero the in-process region behaves like a
+    #: role-split fleet: a sync is *published* (``status: queued``) and a
+    #: simulated indexer claims it after this many seconds, so the pre-claim
+    #: interval the ingest barrier waits through can be exercised offline.
+    mock_claim_seconds: float = 0.0
 
     @field_validator("argument_map")
     @classmethod
@@ -658,6 +663,12 @@ class SourceAuthority(_Model):
 class Topic(_Model):
     id: str
     title: str
+    #: What the person wants to find out, in their own words. The planner
+    #: reads it as the brief on every run; seed terms are then a starting
+    #: vocabulary rather than the whole of what the topic says. Optional, and
+    #: left out of the config digest while unset, so topics written before it
+    #: existed keep their runs resumable.
+    intent: str | None = None
     seed_terms: list[str] = Field(default_factory=list)
     date_range: DateRange = Field(default_factory=DateRange)
     facets: list[Facet] = Field(default_factory=list)
@@ -669,6 +680,8 @@ class Topic(_Model):
             raise ValueError(
                 f"topic {self.id} has no facets; FacetCoverage would have no denominator"
             )
+        if self.intent is not None and not self.intent.strip():
+            self.intent = None
         return self
 
 
@@ -752,6 +765,22 @@ class LabConfig(_Model):
             search_map = (payload.get("pheasant") or {}).get("argument_map", {}).get("search")
             if isinstance(search_map, dict):
                 search_map.pop("expand", None)
+        # A topic's intent arrived after topics did; unset, it is left out.
+        for topic in payload.get("topics") or []:
+            if isinstance(topic, dict) and topic.get("intent") is None:
+                topic.pop("intent", None)
+        # Observational, not experimental: reading the index queue changes what
+        # the run *reports* about the pre-claim interval and nothing it
+        # measures, and the mock's simulated claim delay changes when the
+        # barrier crosses, not what it crosses with. Left out so a pheasant
+        # file that gains them still resumes runs started before.
+        pheasant = payload.get("pheasant")
+        if isinstance(pheasant, dict):
+            capabilities = pheasant.get("capabilities")
+            if isinstance(capabilities, dict):
+                capabilities.pop("index_queue", None)
+            if not pheasant.get("mock_claim_seconds"):
+                pheasant.pop("mock_claim_seconds", None)
         return digest(payload)
 
     def role(self, name: str) -> RoleModel:
@@ -932,6 +961,7 @@ def load_config(
             "knowledge_base",
             "isolation",
             "argument_map",
+            "mock_claim_seconds",
         }:
             apply_override(raw_pheasant, dotted, value)
         elif head in {"tracing", "projection", "export"}:

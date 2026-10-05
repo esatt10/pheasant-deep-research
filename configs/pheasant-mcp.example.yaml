@@ -8,8 +8,9 @@
 # adapter cannot satisfy the tool's advertised JSON Schema.
 #
 # The defaults match pheasant >= 0.12.6 (see its docs/mcp_tools.md), checked
-# end to end against 0.12.16, 0.13.0 and 0.13.1. As shipped it targets 0.13.1
-# (`expand`, below); see there for older regions.
+# end to end against 0.12.16, 0.13.0, 0.13.1 and 0.13.2, standalone and
+# role-split. As shipped it targets 0.13.2: `expand` (0.13.1, below; see there
+# for older regions) and `get_index_queue` (0.13.2, optional).
 # ---------------------------------------------------------------------------
 
 transport: ${PHEASANT_MCP_TRANSPORT:-streamable_http}
@@ -74,6 +75,16 @@ capabilities:
     required: false
   record_evidence:
     tool: ${PHEASANT_TOOL_RECORD_EVIDENCE:-record_evidence}
+    required: false
+  # pheasant >= 0.13.2 (absent before it, which is fine). On a fleet
+  # `sync_source` answers `status: queued`: the sync was published, not run. While the ingest barrier waits, the lab
+  # reads this to report whether an indexer has claimed the task yet
+  # (`ingest.queue` events), rather than showing an unexplained wait. A
+  # memory write's sync is published the same way, and the seeder reads this
+  # to hold P1 until its memory is searchable (`memory.indexed`).
+  # Observational only: it is left out of the config digest.
+  index_queue:
+    tool: ${PHEASANT_TOOL_INDEX_QUEUE:-get_index_queue}
     required: false
 
 discovery:

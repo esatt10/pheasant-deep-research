@@ -3,8 +3,10 @@
 Every payload read here was captured from a running pheasant
 (``tests/fixtures/pheasant/responses-<version>.json``, written by
 ``scripts/capture_pheasant_fixtures.py``). The readers are checked against each
-supported release, not only the newest: 0.12.16, 0.13.0 and 0.13.1 (which
-adds search ``expand``). The mock region is
+supported release, not only the newest: 0.12.16, 0.13.0, 0.13.1 (which
+adds search ``expand``) and 0.13.2 (which adds ``get_index_queue``, captured
+from a role-split region with no indexer running, so its syncs - the memory
+source's included - answer ``queued``). The mock region is
 kept faithful to the same shapes, but a mock is only as faithful as whoever
 last checked it - the receipts, the acknowledgement counts, the hit shape and
 the nested memory record were each read wrongly here for as long as only the
@@ -44,7 +46,7 @@ PHEASANT_PREFERENCE = re.compile(
 
 
 #: Every capture the readers must understand, oldest first.
-RELEASES = ("0.12.16", "0.13.0", "0.13.1")
+RELEASES = ("0.12.16", "0.13.0", "0.13.1", "0.13.2")
 
 
 def captured(version: str) -> dict:
@@ -223,6 +225,111 @@ def test_the_record_id_is_read_from_pheasants_nested_record(wire, config):
     written = seeder._write({"text": "x", "kind": "fact", "scope": "org"}, "q-1")
     assert written is not None
     assert written["record_id"] == payload["record"]["record_id"]
+
+
+def _answering(payloads: dict):
+    """A client whose every call answers with the captured payload for its tool."""
+
+    return SimpleNamespace(
+        call=lambda tool, *a, **k: SimpleNamespace(
+            result=SimpleNamespace(payload=lambda: payloads[tool])
+        )
+    )
+
+
+def test_a_queued_memory_sync_is_remembered_and_awaited():
+    """0.13.2 on a fleet: the record is stored, and its sync is only published."""
+
+    from pheasant_lab.arms.pheasant_memory import MemorySeeder
+    from pheasant_lab.settings import PheasantFile
+
+    wire = captured("0.13.2")
+    queued = wire["memory_write"]["sync"]
+    assert queued["status"] == "queued" and queued["source_id"] == "agent-memory"
+    listing = json.loads(json.dumps(wire["get_index_queue"]))
+    payloads = {"memory_write": wire["memory_write"], "get_index_queue": listing}
+    capabilities = SimpleNamespace(
+        has=lambda name: True,
+        tool=lambda name: {"write_memory": "memory_write", "index_queue": "get_index_queue"}[name],
+    )
+    pheasant = PheasantFile(transport="mock", knowledge_base="pheasant-lab")
+    seeder = MemorySeeder(_answering(payloads), capabilities, pheasant, clock=FakeClock())
+    seeder._write({"text": "x", "kind": "fact", "scope": "org"}, "q-1")
+    assert seeder.queued_tasks == {queued["task_id"]}
+
+    # Still listed: the wait runs out and says so rather than calling it indexed.
+    outcome = seeder.wait_until_indexed(wait_seconds=1.0)
+    assert outcome["outcome"] == "timed_out"
+    assert outcome["outstanding"] == [queued["task_id"]]
+    assert seeder.limitation is None, "only seed() records the outcome P1 is reported with"
+    seeder.index_outcome = outcome
+    assert "not confirmed" in seeder.limitation
+
+    # The indexer ran it: the task leaves the listing, and only that is "indexed".
+    listing["tasks"] = [t for t in listing["tasks"] if t["source"] != "agent-memory"]
+    assert seeder.wait_until_indexed()["outcome"] == "indexed"
+
+    # A dead-lettered task never leaves the listing; it ends the wait at once.
+    listing["tasks"] = [{**wire["get_index_queue"]["tasks"][0], "state": "dead"}]
+    assert seeder.wait_until_indexed()["outcome"] == "failed"
+
+    # A region that cannot list is an unknown, never "nothing outstanding".
+    listing["listing"] = "unavailable"
+    assert seeder.wait_until_indexed()["outcome"] == "unknown"
+
+
+def test_a_standalone_memory_sync_needs_no_wait(config):
+    from pheasant_lab.arms.pheasant_memory import MemorySeeder
+
+    payload = captured("0.13.1")["memory_write"]
+    capabilities = SimpleNamespace(has=lambda name: True, tool=lambda name: "memory_write")
+    seeder = MemorySeeder(_answering({"memory_write": payload}), capabilities, config.pheasant)
+    seeder._write({"text": "x", "kind": "fact", "scope": "org"}, "q-1")
+    assert seeder.queued_tasks == set()
+
+
+def test_the_mock_holds_a_queued_memory_record_back_until_it_is_indexed(config):
+    from pheasant_lab.arms.pheasant_memory import MemorySeeder
+
+    server = MockPheasantServer(claim_seconds=0.05)
+    client = PheasantClient.in_process(config.pheasant, server)
+    capabilities = resolve(config.pheasant, client.connect().tools)
+    seeder = MemorySeeder(client, capabilities, config.pheasant)
+    written = seeder._write({"text": "dsup binds nucleosomes", "kind": "fact"}, "q-1")
+    assert written is not None and len(seeder.queued_tasks) == 1
+    assert server._memory_hits("dsup nucleosomes", as_of=None, include_rules=False) == []
+
+    outcome = seeder.wait_until_indexed(wait_seconds=10.0)
+    assert outcome["outcome"] == "indexed"
+    assert server._memory_hits("dsup nucleosomes", as_of=None, include_rules=False)
+
+
+def test_the_mock_queues_in_pheasants_0_13_2_shape():
+    wire = captured("0.13.2")
+    server = MockPheasantServer(claim_seconds=60)
+    server.sources["fixture-wire"] = "/state/uploads/x"
+    sync = server._tool_sync_source({"source_name": "fixture-wire"})
+    assert sync.keys() == wire["sync_source_queued"].keys()
+    memory = server._tool_memory_write({"text": "fixture fact", "scope": "org", "sync": True})
+    assert memory.keys() == wire["memory_write"].keys()
+    assert memory["sync"].keys() == wire["memory_write"]["sync"].keys()
+    listing = server._tool_get_index_queue({})
+    assert listing["listing"] == wire["get_index_queue"]["listing"]
+    for task in listing["tasks"]:
+        missing = set(wire["get_index_queue"]["tasks"][0]) - set(task)
+        assert not missing, f"the mock's task lacks {sorted(missing)}"
+    assert {t["source"] for t in listing["tasks"]} == {"fixture-wire", "agent-memory"}
+
+
+def test_the_ingest_barrier_reads_only_its_own_source_from_the_queue(config):
+    wire = captured("0.13.2")
+    capabilities = SimpleNamespace(has=lambda name: True, tool=lambda name: "get_index_queue")
+    from pheasant_lab.pheasant.ingestion import read_index_queue
+
+    client = _answering({"get_index_queue": wire["get_index_queue"]})
+    (task,) = read_index_queue(client, capabilities, {}, source="fixture-wire")
+    assert task["task_id"] == wire["sync_source_queued"]["task_id"]
+    assert task["state"] == "awaiting_claim" and task["position"] == 2
 
 
 def test_seeded_preferences_parse_under_pheasants_rule_grammar(config):

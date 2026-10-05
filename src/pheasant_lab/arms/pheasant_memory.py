@@ -12,11 +12,13 @@ only that if two things hold:
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from ..pheasant.capabilities import CapabilityMap
 from ..pheasant.client import PheasantClient
+from ..pheasant.ingestion import read_index_queue
 from ..pheasant.retrieval import MemoryOptions
 from ..settings import PheasantFile
 from ..textkit import content_terms, truncate
@@ -39,6 +41,10 @@ class PheasantMemoryArm(PheasantCorpusArm):
         )
 
 
+#: pheasant's memory source. A fleet publishes its sync like any other.
+MEMORY_SOURCE = "agent-memory"
+
+
 class MemorySeeder:
     """Writes the memory ``P1`` is measured with.
 
@@ -46,6 +52,12 @@ class MemorySeeder:
     leakage checker reads to prove no holdout or control question created the
     treatment it is being tested against - so it is written even though
     nothing in the region requires it.
+
+    On a role-split region a memory write answers ``sync: {status: queued}``
+    (pheasant >= 0.13.2): the record is stored and is not yet searchable.
+    ``P1`` starting then would be measured partly *without* the treatment it
+    is named for, so :meth:`seed` waits for the queued tasks to leave the
+    region's index queue and records how that went (``memory.indexed``).
     """
 
     def __init__(
@@ -56,6 +68,7 @@ class MemorySeeder:
         *,
         tracer: Any = None,
         principal: str = "pheasant-swarm-lab",
+        clock: Any = time,
     ) -> None:
         self.client = client
         self.capabilities = capabilities
@@ -64,6 +77,11 @@ class MemorySeeder:
         self.principal = principal
         self._kb_field = str(config.argument_map.get("knowledge_base_field", "knowledge_base"))
         self.written: list[dict[str, Any]] = []
+        self._clock = clock
+        #: Task ids of memory syncs the region published rather than ran.
+        self.queued_tasks: set[str] = set()
+        #: How the wait for those tasks ended; ``None`` when nothing was queued.
+        self.index_outcome: dict[str, Any] | None = None
 
     @property
     def available(self) -> bool:
@@ -106,7 +124,86 @@ class MemorySeeder:
                 "memory.seeded",
                 payload={"records": len(records), "learned_questions": len(learned)},
             )
+        if self.queued_tasks:
+            self.index_outcome = self.wait_until_indexed()
         return records
+
+    def wait_until_indexed(self, wait_seconds: float | None = None) -> dict[str, Any]:
+        """Wait for every queued memory sync to leave the index queue.
+
+        A task is done when the region's complete listing no longer holds it.
+        A ``dead`` task never will, so it ends the wait as ``failed``. Without
+        the ``index_queue`` capability, or with a listing the backend cannot
+        give, completion is unknowable: the outcome says so rather than
+        guessing, and the engine turns it into a limitation.
+        """
+
+        pending = set(self.queued_tasks)
+        deadline = self._clock.monotonic() + (
+            self.config.timeout_seconds if wait_seconds is None else wait_seconds
+        )
+        backoff = max(0.05, self.config.retry_backoff_seconds)
+        started = self._clock.monotonic()
+        polls = 0
+        outcome = "unknown"
+        dead: list[str] = []
+        while True:
+            polls += 1
+            tasks = read_index_queue(
+                self.client,
+                self.capabilities,
+                {self._kb_field: self.config.knowledge_base},
+                source=MEMORY_SOURCE,
+            )
+            if tasks is None:
+                outcome = "unknown"
+                break
+            listed = {str(task.get("task_id")): task for task in tasks}
+            dead = sorted(t for t in pending if (listed.get(t) or {}).get("state") == "dead")
+            if dead:
+                outcome = "failed"
+                break
+            pending = {t for t in pending if t in listed}
+            if not pending:
+                outcome = "indexed"
+                break
+            if self._clock.monotonic() >= deadline:
+                outcome = "timed_out"
+                break
+            self._clock.sleep(min(backoff, self.config.retry_backoff_max_seconds))
+            backoff *= 2
+        result = {
+            "outcome": outcome,
+            "tasks": sorted(self.queued_tasks),
+            "outstanding": sorted(pending) if outcome != "indexed" else [],
+            "dead": dead,
+            "polls": polls,
+            "waited_seconds": round(self._clock.monotonic() - started, 3),
+        }
+        if self.tracer is not None:
+            self.tracer.emit(
+                "memory.indexed",
+                status={"indexed": "succeeded", "failed": "failed"}.get(outcome, "partial"),
+                payload=result,
+            )
+        return result
+
+    @property
+    def limitation(self) -> str | None:
+        """What ``P1``'s numbers cannot claim, when the wait did not confirm."""
+
+        if self.index_outcome is None or self.index_outcome["outcome"] == "indexed":
+            return None
+        reason = {
+            "unknown": "the region offers no complete index-queue listing to confirm it",
+            "timed_out": f"the wait ended after {self.index_outcome['waited_seconds']}s",
+            "failed": "the region dead-lettered the task",
+        }[self.index_outcome["outcome"]]
+        return (
+            f"P1's memory syncs were published to the region's index queue, and their indexing "
+            f"was not confirmed before P1 ran ({reason}); P1 may have been measured partly "
+            "without its memory"
+        )
 
     def _candidates(self, entry: Mapping[str, Any]) -> list[dict[str, Any]]:
         """Three rule shapes, each derived from the arm's own trace."""
@@ -187,6 +284,9 @@ class MemorySeeder:
             return None
         payload = outcome.result.payload() if outcome.result else {}
         body = payload if isinstance(payload, Mapping) else {}
+        sync = body.get("sync")
+        if isinstance(sync, Mapping) and sync.get("status") == "queued" and sync.get("task_id"):
+            self.queued_tasks.add(str(sync["task_id"]))
         # Pheasant nests the stored record under `record`.
         stored = body.get("record") if isinstance(body.get("record"), Mapping) else body
         written = {
