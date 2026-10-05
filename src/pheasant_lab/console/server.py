@@ -24,12 +24,16 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
+
+from pydantic import ValidationError
 
 from ..settings import ConfigError, load_config
 from .launcher import Launcher
 from .projection import RunWatcher, fold_until, list_runs
 from .region import probe_region
+from .topics import add_topic, topic_rows
+from .traces import RunTraces
 
 #: How often a stream re-reads a run's files. Half a second keeps the feed
 #: live without re-reading anything: a watcher only reads appended bytes.
@@ -83,9 +87,15 @@ class Console:
             )
         return rows
 
+    def traces(self, run_id: str) -> RunTraces:
+        return RunTraces(self.watcher(run_id).root)
+
+    def topics(self, config: str, overrides: list[str]) -> dict[str, Any]:
+        return topic_rows(self.project_root, self.launcher.config_path(config), _pairs(overrides))
+
     def resolve(self, config: str, overrides: list[str]) -> dict[str, Any]:
         path = self.launcher.config_path(config)
-        pairs = dict(item.split("=", 1) for item in overrides if "=" in item)
+        pairs = _pairs(overrides)
         resolved = load_config(
             path, overrides=pairs, project_root=self.project_root, env_file=".env"
         )
@@ -130,6 +140,21 @@ class Console:
         }
 
 
+def _pairs(overrides: list[str]) -> dict[str, str]:
+    return dict(item.split("=", 1) for item in overrides if "=" in item)
+
+
+def _validation_text(error: ValidationError) -> str:
+    """A pydantic refusal as one line a form can show beside its fields."""
+
+    parts = []
+    for item in error.errors():
+        where = ".".join(str(p) for p in item.get("loc", ()))
+        message = str(item.get("msg", "")).removeprefix("Value error, ")
+        parts.append(f"{where}: {message}" if where else message)
+    return "; ".join(parts)
+
+
 def make_handler(console: Console) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         server_version = "pheasant-lab-console"
@@ -142,7 +167,8 @@ def make_handler(console: Console) -> type[BaseHTTPRequestHandler]:
         # -- dispatch ------------------------------------------------------
         def do_GET(self) -> None:
             url = urlparse(self.path)
-            query = {k: v[-1] for k, v in parse_qs(url.query).items()}
+            multi = parse_qs(url.query)
+            query = {k: v[-1] for k, v in multi.items()}
             parts = [p for p in url.path.split("/") if p]
             try:
                 if parts[:1] != ["api"]:
@@ -167,6 +193,15 @@ def make_handler(console: Console) -> type[BaseHTTPRequestHandler]:
                     return self._reports(route[1])
                 if len(route) == 4 and route[0] == "runs" and route[2] == "reports":
                     return self._report(route[1], route[3])
+                if len(route) == 3 and route[0] == "runs" and route[2] == "traces":
+                    return self._json({"actors": console.traces(route[1]).actors()})
+                if len(route) == 4 and route[0] == "runs" and route[2] == "traces":
+                    return self._json(console.traces(route[1]).trace(unquote(route[3])))
+                if len(route) == 4 and route[0] == "runs" and route[2] == "mcp":
+                    return self._json(console.traces(route[1]).mcp_call(int(route[3])))
+                if route == ["topics"]:
+                    config = query.get("config") or console.default_config
+                    return self._json(console.topics(config, multi.get("set", [])))
                 if route == ["configs"]:
                     return self._json(console.configs())
                 if route == ["launches"]:
@@ -179,6 +214,8 @@ def make_handler(console: Console) -> type[BaseHTTPRequestHandler]:
                 return self._error(HTTPStatus.NOT_FOUND, f"no route {url.path}")
             except KeyError as exc:
                 return self._error(HTTPStatus.NOT_FOUND, f"unknown: {exc}")
+            except ValidationError as exc:
+                return self._error(HTTPStatus.BAD_REQUEST, _validation_text(exc))
             except (ValueError, ConfigError) as exc:
                 return self._error(HTTPStatus.BAD_REQUEST, str(exc))
 
@@ -209,6 +246,18 @@ def make_handler(console: Console) -> type[BaseHTTPRequestHandler]:
                         except ValueError:
                             result["projection"] = None
                     return self._json(result)
+                if parts == ["topics"]:
+                    topic = body.get("topic")
+                    if not isinstance(topic, dict):
+                        raise ValueError("body.topic must be an object")
+                    result = add_topic(
+                        console.project_root,
+                        console.launcher.config_path(config),
+                        _pairs(overrides),
+                        topic,
+                        replace=bool(body.get("replace")),
+                    )
+                    return self._json(result, status=HTTPStatus.CREATED)
                 if parts == ["launches"]:
                     launch = console.launcher.launch(
                         kind=str(body.get("kind") or "demo"),
@@ -225,6 +274,8 @@ def make_handler(console: Console) -> type[BaseHTTPRequestHandler]:
                 return self._error(HTTPStatus.NOT_FOUND, f"no route {url.path}")
             except KeyError as exc:
                 return self._error(HTTPStatus.NOT_FOUND, f"unknown: {exc}")
+            except ValidationError as exc:
+                return self._error(HTTPStatus.BAD_REQUEST, _validation_text(exc))
             except (ValueError, ConfigError) as exc:
                 return self._error(HTTPStatus.BAD_REQUEST, str(exc))
 

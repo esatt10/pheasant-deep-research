@@ -4,11 +4,15 @@ import { api } from "../api";
 import { usePoll } from "../hooks/usePoll";
 import type { ConfigRow, Resolved } from "../types";
 import { armColor, usd } from "../format";
+import { Topics } from "../configure/Topics";
 
 /**
- * A form over the lab's own YAML. Nothing here writes a config file: every
- * change is a `--set a.b=value`, exactly what the CLI takes, so a run started
- * from this page is reproducible from a terminal with the argv it shows.
+ * A form over the lab's own YAML. Every change is a `--set a.b=value`, exactly
+ * what the CLI takes, so a run started from this page is reproducible from a
+ * terminal with the argv it shows. One exception, because a topic is content
+ * rather than a setting: a new research topic is written to
+ * `configs/topics.local.yaml`, and the run points at it with — again — a
+ * `--set experiment.topics_file=...` (see configure/Topics.tsx).
  */
 
 const PROFILES = [
@@ -34,6 +38,26 @@ const ARMS = [
   { id: "P2", text: "tuned-search replay" },
 ];
 
+// The page's own edits, per tab: a reload keeps the overrides (including the
+// one that points at a topic you just added) instead of quietly dropping them.
+const DRAFT_KEY = "pheasant-lab-configure-draft";
+
+interface Draft {
+  config?: string;
+  overrides: Record<string, string>;
+  topic?: string;
+}
+
+function loadDraft(config?: string): Draft {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(DRAFT_KEY) ?? "null") as Draft | null;
+    if (saved && (!config || saved.config === config)) return saved;
+  } catch {
+    /* storage unavailable or corrupt */
+  }
+  return { overrides: {} };
+}
+
 function read(tree: Record<string, any> | undefined, path: string): unknown {
   return path.split(".").reduce<any>((node, key) => (node == null ? undefined : node[key]), tree);
 }
@@ -42,14 +66,33 @@ export function ConfigurePage({ config, onConfig }: { config?: string; onConfig:
   const navigate = useNavigate();
   const configs = usePoll<ConfigRow[]>(api.configs, 60000);
   const selected = config ?? configs.data?.find((c) => c.default)?.path;
-  const [overrides, setOverrides] = useState<Record<string, string>>({});
-  const [topic, setTopic] = useState<string>();
+  const [draft] = useState(() => loadDraft(config));
+  const [overrides, setOverrides] = useState<Record<string, string>>(draft.overrides);
+  const [topic, setTopic] = useState<string | undefined>(draft.topic);
   const [resolved, setResolved] = useState<Resolved>();
   const [base, setBase] = useState<Resolved>();
   const [error, setError] = useState<string | null>(null);
   const [plan, setPlan] = useState<Record<string, any> | null>(null);
   const [doctor, setDoctor] = useState<{ exit_code: number; output: string } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+
+  useEffect(() => {
+    // A draft made against another config file does not apply to this one.
+    if (selected && draft.config && draft.config !== selected) {
+      setOverrides({});
+      setTopic(undefined);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected]);
+
+  useEffect(() => {
+    if (!selected) return;
+    try {
+      sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ config: selected, overrides, topic }));
+    } catch {
+      /* storage unavailable */
+    }
+  }, [selected, overrides, topic]);
 
   const set = useMemo(() => Object.entries(overrides).map(([k, v]) => `${k}=${v}`), [overrides]);
 
@@ -131,7 +174,7 @@ export function ConfigurePage({ config, onConfig }: { config?: string; onConfig:
             <div className="card__body grid3">
               <div className="fld">
                 <label>config file</label>
-                <select className="input" value={selected ?? ""} onChange={(e) => { onConfig(e.target.value); setOverrides({}); }}>
+                <select className="input" value={selected ?? ""} onChange={(e) => { onConfig(e.target.value); setOverrides({}); setTopic(undefined); }}>
                   {(configs.data ?? []).map((c) => (
                     <option key={c.path} value={c.path}>{c.path}</option>
                   ))}
@@ -153,6 +196,20 @@ export function ConfigurePage({ config, onConfig }: { config?: string; onConfig:
               </div>
             </div>
           </div>
+
+          {selected ? (
+            <Topics
+              config={selected}
+              set={set}
+              selected={topic}
+              onSelect={setTopic}
+              onSaved={(override, topicId) => {
+                const [path, value] = override.split("=", 2);
+                change(path, value);
+                setTopic(topicId);
+              }}
+            />
+          ) : null}
 
           <div className="card">
             <div className="card__head">Collection profile <span className="sub">supplies defaults, never overrides: keys you set stay set</span></div>
@@ -312,7 +369,12 @@ export function ConfigurePage({ config, onConfig }: { config?: string; onConfig:
           <div className="card">
             <div className="card__head">
               Resolved <span className="sub">{Object.keys(overrides).length} override(s)</span>
-              <div className="r"><span className="mono muted" title={resolved?.digest}>{resolved?.digest.slice(7, 19)}…</span></div>
+              <div className="r">
+                {Object.keys(overrides).length || topic ? (
+                  <button className="btn btn--ghost btn--small" onClick={() => { setOverrides({}); setTopic(undefined); }}>
+                    reset all
+                  </button>
+                ) : null}<span className="mono muted" title={resolved?.digest}>{resolved?.digest.slice(7, 19)}…</span></div>
             </div>
             <div className="card__body">
               <pre className="yaml">

@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import type { Agent, Facet, RunModel, Source } from "../types";
 import { STAGE_LABEL, armColor, clock } from "../format";
+import { ZoomControls, usePanZoom } from "../components/zoom";
 
 /**
  * The swarm as a place (Option B). Research branches orbit the orchestrator;
@@ -63,6 +64,7 @@ export function Constellation({
     update();
     return () => observer.disconnect();
   }, []);
+  const zoom = usePanZoom(host);
 
   const { w, h } = size;
   const researchers = model.agents.filter((a) => a.role === "researcher");
@@ -105,7 +107,15 @@ export function Constellation({
   const armTraffic = (arm: string) => pheasantTicks.filter((t) => t.arm === arm).length;
 
   return (
-    <div ref={host} style={{ width: "100%", height: "100%" }}>
+    <div
+      ref={host}
+      className="zoomhost"
+      style={{ width: "100%", height: "100%" }}
+      onPointerDown={zoom.drag.onPointerDown}
+      onPointerMove={zoom.drag.onPointerMove}
+      onPointerUp={zoom.drag.onPointerUp}
+      onPointerCancel={zoom.drag.onPointerCancel}
+    >
       <svg width={w} height={h} role="img" aria-label="Swarm constellation" onClick={() => onSelectAgent(null)}>
         <defs>
           <pattern id="cg-grid" width="28" height="28" patternUnits="userSpaceOnUse">
@@ -120,7 +130,8 @@ export function Constellation({
           </marker>
         </defs>
         <rect width={w} height={h} fill="var(--graph-bg)" />
-        <rect width={w} height={h} fill="url(#cg-grid)" />
+        <g transform={zoom.transform} data-testid="constellation-view">
+        <rect x={-w * 4} y={-h * 4} width={w * 9} height={h * 9} fill="url(#cg-grid)" />
 
         <path d={curve(orch, planner)} stroke="var(--graph-edge)" strokeWidth={2} fill="none" />
         <path d={curve(orch, auditor)} stroke="var(--graph-edge)" strokeWidth={1.2} strokeDasharray="4 3" fill="none" />
@@ -296,7 +307,15 @@ export function Constellation({
             </g>
           );
         })}
+        </g>
       </svg>
+      <ZoomControls
+        onIn={() => zoom.zoomAt(1.3)}
+        onOut={() => zoom.zoomAt(1 / 1.3)}
+        onFit={zoom.fit}
+        fitted={zoom.isFit}
+        hint="or scroll; drag to pan"
+      />
     </div>
   );
 }

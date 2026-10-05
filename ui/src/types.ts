@@ -240,3 +240,128 @@ export interface RegionProbe {
   queue_unsupported?: boolean;
   notices: Notice[];
 }
+
+/* ---- traces (console/traces.py) ---------------------------------------- */
+
+export interface TraceActor {
+  actor: string;
+  kind: "orchestration" | "agent" | "arm";
+  label: string;
+  role: string | null;
+  events: number;
+  spans: number;
+  mcp_calls: number;
+  model_calls: number;
+  cost_usd: number;
+  tokens: number;
+  failures: number;
+}
+
+export interface TraceEvent {
+  event_id: string;
+  sequence: number;
+  t: number | null;
+  event_type: string;
+  status: string | null;
+  question_id: string | null;
+  payload: Record<string, unknown>;
+  mcp_call?: number;
+  placed?: "by_time" | "by_question";
+}
+
+export interface TraceSpan {
+  span_id: string;
+  parent_span_id: string | null;
+  name: string;
+  status: string | null;
+  error: string | null;
+  start: number | null;
+  end: number | null;
+  duration_ms: number | null;
+  attributes: Record<string, string>;
+  children: TraceSpan[];
+  events: TraceEvent[];
+}
+
+export interface TraceAnswer {
+  question_id: string;
+  question: string | null;
+  question_type: string | null;
+  cohorts: string[] | null;
+  repetition: number | null;
+  status: string | null;
+  abstained: boolean | null;
+  abstention_reason: string | null;
+  answer_text: string | null;
+  claims: { text?: string; claim_text?: string; citations?: string[] }[];
+  queries_used: string[];
+  read_passages: { artifact_id?: string; source_id?: string; text_source?: string }[];
+  search_calls: Record<string, unknown>[] | null;
+  latency_ms: number | null;
+  cost_usd: number | null;
+  model: string | null;
+  snapshot_id: string | null;
+  error: string | null;
+}
+
+export interface TraceClaim {
+  claim_id: string;
+  claim_text: string;
+  claim_type?: string;
+  support?: string;
+  source_id?: string;
+  subtopic_id?: string;
+  round?: number;
+  facet_ids?: string[];
+  locator?: string;
+  eligible?: boolean;
+}
+
+export interface Trace {
+  actor: string;
+  label: string;
+  window: { start: number; end: number };
+  spans: TraceSpan[];
+  events: TraceEvent[];
+  unjoined_mcp_calls: { mcp_call: number; tool: string; status: string; duration_ms: number; question_id: string | null; t: number | null }[];
+  answers?: TraceAnswer[];
+  claims?: TraceClaim[];
+  errors: Record<string, unknown>[];
+}
+
+export interface McpCall {
+  index: number;
+  tool: string;
+  status: string;
+  attempt: number;
+  duration_ms: number;
+  arm_id: string | null;
+  question_id: string | null;
+  recorded_at: string;
+  request: unknown;
+  response: unknown;
+}
+
+/* ---- topics (console/topics.py) ---------------------------------------- */
+
+export interface TopicFacet {
+  id: string;
+  label: string;
+  weight: number;
+}
+
+export interface TopicDoc {
+  id: string;
+  title: string;
+  seed_terms: string[];
+  date_range: { from: string | null; to: string | null };
+  facets: TopicFacet[];
+  source_authority: { family_key: string[]; preferred_types: string[]; minimum_peer_reviewed: number };
+}
+
+export interface TopicList {
+  topics_file: string;
+  local_file: string;
+  override: string;
+  topics: TopicDoc[];
+}

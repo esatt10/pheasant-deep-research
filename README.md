@@ -351,6 +351,13 @@ A browser surface over everything above, in pheasant's own visual language:
 * **Configure** — a form over the YAML. Every change is a `--set`, shown as the
   exact argv it will run; `plan` projects the cost as you edit, `doctor` runs
   on demand, and a change that moves the config digest says so.
+* **Research topics** — on Configure, **+ New topic** takes a title, seed
+  terms, a publication window, the facets coverage is measured against (label
+  and weight) and the source authority. Saving validates it with the same
+  model `load_config` uses, writes the current topics plus the new one to
+  `configs/topics.local.yaml` (git-ignored; the shipped topics files are never
+  rewritten), and points the run at it with
+  `--set experiment.topics_file=configs/topics.local.yaml --topic <id>`.
 * **Live** — a run as it happens, from its append-only trace: phases, the
   swarm as a tree, a **constellation** (research branches with their sources
   in orbit, coloured by custody, travelling to a Pheasant node drawn as
@@ -366,6 +373,17 @@ A browser surface over everything above, in pheasant's own visual language:
   notice, an amber funnel column — rather than as an unexplained wait. The
   top-bar chip asks the region's `/ready` and `/queue` directly.
 * **Runs** and **Reports** — every run directory, and its Markdown reports.
+* **Agent traces** (Reports → Agent traces) — every actor's whole record: the
+  orchestration, each research branch and each arm. A waterfall of its span
+  tree on the run's clock, every event inside the span that recorded it, each
+  MCP call's request and response as the region answered, an arm's question,
+  answer, claims and reads, and a branch's extracted claims. Read from
+  `raw/*.jsonl`, never recomputed.
+
+The constellation, the swimlanes and the trace waterfall zoom (**+**/**−**, or
+scroll — Ctrl + scroll on the timelines), pan (drag) and **Fit**. Every page
+is a real URL: reloading `/configure`, `/live/<run>` or
+`/reports/<run>/traces/<agent>` reloads that page.
 
 Runs start as ordinary CLI child processes, so a run launched from a browser
 and one typed in a terminal leave identical traces, and closing the console

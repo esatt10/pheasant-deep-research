@@ -230,6 +230,7 @@ configs/proof-policy.yaml
 configs/pheasant-mcp.yaml
 configs/logging.yaml
 configs/topics.yaml
+configs/topics.local.yaml
 configs/pricing.yaml
 
 .env

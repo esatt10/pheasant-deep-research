@@ -142,6 +142,22 @@ make ui && uv run pheasant-lab serve                  # the console, http://127.
   CLI child processes (`console/launcher.py`), so a browser-started run and a
   typed one leave identical traces. Nothing the console computes is a number a
   report states; arm progress is counted, never scored (rule 1).
+- **The console writes one file, and only for topics.** A research topic is
+  content, not a setting, so it cannot be a `--set`; `console/topics.py`
+  writes the config's current topics plus the new one to
+  `configs/topics.local.yaml` (git-ignored) after validating with the same
+  `Topic` model, re-resolves the whole config against what it wrote, and the
+  run points at it with `--set experiment.topics_file=...`. The shipped topics
+  files are never rewritten, and the argv is still the whole story.
+- **Traces are joined, not recomputed.** `console/traces.py` attributes every
+  event and span to one actor (`agent_id`, else `arm_id`, else
+  orchestration), nests events by `span_id`, and joins an MCP log row to the
+  `mcp.tool.call` event that recorded it on `(tool, attempt, duration_ms)` -
+  the log carries no span id. An event whose span was never exported is
+  placed in its own actor's narrowest enclosing span (same question when both
+  carry one) and marked `placed: by_time`/`by_question`; otherwise it stays
+  loose. Prompts and completions are not recorded, only their digests,
+  tokens and spend, and the trace view says so.
 - **The pre-claim interval is recorded, not inferred.** On a role-split
   Pheasant `sync_source` answers `status: queued`; the lab emits
   `ingest.sync` with that disposition, one `ingest.barrier` per acknowledge
@@ -234,6 +250,14 @@ make ui && uv run pheasant-lab serve                  # the console, http://127.
   replay that placed receipts by time showed documents indexed before the
   sync that indexed them. A replay admits `indexed` only after it has folded
   the crossed barrier, which is how the lab learnt it in the first place.
+- **A span id on an event is not a span in `spans.jsonl`.** Events emitted on
+  a worker thread (an arm's MCP calls and model calls, most orchestration
+  bookkeeping) carry a span id the tracer never exported, so nesting by
+  `span_id` alone left every arm event outside its question's span. The trace
+  view places them by time and question, and says it did.
+- **A drag ends in a click.** Panning a canvas by dragging across a node
+  selected that node on release. `components/zoom.tsx` swallows the click
+  after a real drag, in the capture phase so no node handler sees it.
 - **Events and receipts are two files, read in either order.** Stamping
   "awaiting claim" on documents when the queued sync arrived missed every
   document whose acceptance was read afterwards. The claim state lives on the

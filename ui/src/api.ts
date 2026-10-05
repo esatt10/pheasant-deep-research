@@ -1,4 +1,16 @@
-import type { ConfigRow, Launch, RegionProbe, Resolved, RunModel, RunRow } from "./types";
+import type {
+  ConfigRow,
+  Launch,
+  McpCall,
+  RegionProbe,
+  Resolved,
+  RunModel,
+  RunRow,
+  TopicDoc,
+  TopicList,
+  Trace,
+  TraceActor,
+} from "./types";
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number) {
@@ -52,6 +64,16 @@ export const api = {
   launch: (body: ConfigRequest & { kind: string; arms?: string; run_id?: string }) =>
     post<Launch>("/launches", body),
   stop: (launchId: string) => post<Launch>(`/launches/${launchId}/stop`, {}),
+  traces: (runId: string) => request<{ actors: TraceActor[] }>(`/runs/${runId}/traces`),
+  trace: (runId: string, actor: string) =>
+    request<Trace>(`/runs/${runId}/traces/${encodeURIComponent(actor)}`),
+  mcpCall: (runId: string, index: number) => request<McpCall>(`/runs/${runId}/mcp/${index}`),
+  topics: (config: string, set: string[]) =>
+    request<TopicList>(
+      `/topics?config=${encodeURIComponent(config)}${set.map((s) => `&set=${encodeURIComponent(s)}`).join("")}`,
+    ),
+  addTopic: (body: Omit<ConfigRequest, "topic"> & { topic: TopicDoc; replace?: boolean }) =>
+    post<{ topic: TopicDoc; replaced: boolean; topics_file: string; override: string; count: number }>("/topics", body),
   region: (config?: string) =>
     request<RegionProbe>(`/region${config ? `?config=${encodeURIComponent(config)}` : ""}`),
 };

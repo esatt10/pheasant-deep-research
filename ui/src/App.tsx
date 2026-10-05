@@ -38,6 +38,8 @@ export function App() {
           <Route path="/live/:runId" element={<LivePage onCost={setCost} />} />
           <Route path="/reports" element={<ReportsPage />} />
           <Route path="/reports/:runId" element={<ReportsPage />} />
+          <Route path="/reports/:runId/traces" element={<ReportsPage view="traces" />} />
+          <Route path="/reports/:runId/traces/:actor" element={<ReportsPage view="traces" />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

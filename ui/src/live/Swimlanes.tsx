@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import type { Bar, Lane, Tick } from "../types";
 import { ROLE_COLOR, armColor, clock } from "../format";
+import { ZoomControls, useDrag, useTimeZoom, useWheel } from "../components/zoom";
 
 /**
  * One lane per actor, one bar per closed span, one tick per event (Option A).
@@ -19,8 +20,15 @@ function laneColor(lane: Lane): string {
 
 function niceStep(span: number, target: number): number {
   const raw = span / Math.max(1, target);
-  const steps = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
+  const steps = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
   return steps.find((s) => s >= raw) ?? 3600;
+}
+
+/** Zoomed in, whole seconds repeat; show as many decimals as the step needs. */
+function axisLabel(t: number, step: number): string {
+  if (step < 0.1) return `${t.toFixed(2)}s`;
+  if (step < 1) return `${t.toFixed(1)}s`;
+  return clock(t);
 }
 
 function tickColor(tick: Tick, lane: Lane): string {
@@ -63,13 +71,37 @@ export function Swimlanes({
 
   // Leave headroom to the right of "now" while live, so the newest work is
   // never drawn against the edge.
-  const span = Math.max(1, live ? Math.max(horizon, now) * 1.08 : horizon * 1.02);
+  const full = Math.max(1, live ? Math.max(horizon, now) * 1.08 : horizon * 1.02);
   const plot = Math.max(100, width - LABEL_W - 12);
-  const x = (t: number) => LABEL_W + (Math.min(Math.max(t, 0), span) / span) * plot;
+  const zoom = useTimeZoom(full);
+  const [t0, t1] = zoom.range;
+  const span = t1 - t0;
+  // Off-window positions are clamped just outside the plot, which the clip
+  // path then hides — a bar that starts before the window still draws from
+  // its left edge.
+  const x = (t: number) => LABEL_W + (Math.min(Math.max(t - t0, -span * 0.01), span * 1.01) / span) * plot;
+  const at = (clientX: number) => {
+    const left = host.current?.getBoundingClientRect().left ?? 0;
+    return t0 + ((clientX - left - LABEL_W) / plot) * span;
+  };
+  const drag = useDrag((dx) => zoom.panBy((-dx / plot) * span), host);
+  useWheel(host, (event) => {
+    // Ctrl / ⌘ + wheel (and a pinch, which browsers report the same way)
+    // zooms time; a sideways scroll pans it; a plain wheel scrolls the lanes.
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      zoom.zoomAt(Math.exp(-event.deltaY * 0.004), at(event.clientX));
+    } else if (Math.abs(event.deltaX) > Math.abs(event.deltaY) || event.shiftKey) {
+      if (zoom.isFit) return;
+      event.preventDefault();
+      zoom.panBy(((event.shiftKey ? event.deltaY : event.deltaX) / plot) * span);
+    }
+  });
   const height = AXIS_H + lanes.length * rowHeight + 4;
   const step = niceStep(span, Math.floor(plot / 70));
   const axis: number[] = [];
-  for (let t = 0; t <= span; t += step) axis.push(t);
+  for (let t = Math.ceil(t0 / step) * step; t <= t1 + 1e-9; t += step) axis.push(t);
+  const visible = (t: number) => t >= t0 - span * 0.01 && t <= t1 + span * 0.01;
   const barH = Math.min(18, rowHeight - 10);
 
   const drawBar = (bar: Bar, lane: Lane, row: number, key: number) => {
@@ -106,9 +138,20 @@ export function Swimlanes({
   };
 
   return (
-    <div ref={host} style={{ width: "100%", height: "100%", overflow: "auto" }}>
-      <svg width={width} height={height} role="img" aria-label="Swimlane timeline">
+    <div className="zoomhost" style={{ width: "100%", height: "100%" }}>
+    <div
+      ref={host}
+      style={{ width: "100%", height: "100%", overflow: "auto", cursor: zoom.isFit ? undefined : "grab" }}
+      onPointerDown={drag.onPointerDown}
+      onPointerMove={drag.onPointerMove}
+      onPointerUp={drag.onPointerUp}
+      onPointerCancel={drag.onPointerCancel}
+    >
+      <svg width={width} height={height} role="img" aria-label="Swimlane timeline" data-window={`${t0.toFixed(3)}-${t1.toFixed(3)}`}>
         <defs>
+          <clipPath id="lane-plot">
+            <rect x={LABEL_W} y={0} width={plot} height={height} />
+          </clipPath>
           <pattern id="lane-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
             <rect width="6" height="6" fill="var(--warn-soft)" />
             <rect width="2.4" height="6" fill="var(--warn)" opacity="0.5" />
@@ -119,7 +162,7 @@ export function Swimlanes({
           <g key={t}>
             <line x1={x(t)} x2={x(t)} y1={AXIS_H - 4} y2={height} stroke="var(--graph-grid)" />
             <text x={x(t)} y={13} fontSize={10} fill="var(--muted)" textAnchor="middle" fontFamily="var(--font-mono)">
-              {clock(t)}
+              {axisLabel(t, step)}
             </text>
           </g>
         ))}
@@ -134,8 +177,12 @@ export function Swimlanes({
               <text x={22} y={y + rowHeight / 2 + 4} fontSize={11.5} fill="var(--text)" fontWeight={500}>
                 {lane.label.length > 24 ? `${lane.label.slice(0, 23)}…` : lane.label}
               </text>
-              {lane.bars.map((bar, index) => drawBar(bar, lane, row, index))}
+              <g clipPath="url(#lane-plot)">
+              {lane.bars.map((bar, index) =>
+                (bar.end ?? now) >= t0 && bar.start <= t1 ? drawBar(bar, lane, row, index) : null,
+              )}
               {lane.ticks
+                .filter((tick) => visible(tick.t))
                 // The barrier's polls are the bar itself; drawing each one as a
                 // dot on top of it only hides the hatching that says "waiting".
                 .filter((tick) => !(lane.kind === "indexer" && tick.kind === "barrier_waiting"))
@@ -152,13 +199,14 @@ export function Swimlanes({
                   <title>{`${tick.kind} · ${String(tick.label ?? "")} · ${clock(tick.t)}`}</title>
                 </circle>
               ))}
+              </g>
             </g>
           );
         })}
-        {marker != null ? (
+        {marker != null && visible(marker) ? (
           <line x1={x(marker)} x2={x(marker)} y1={AXIS_H - 6} y2={height} stroke="var(--accent)" strokeWidth={1.5} strokeDasharray="3 3" />
         ) : null}
-        {live ? (
+        {live && visible(now) ? (
           <g>
             <line x1={x(now)} x2={x(now)} y1={AXIS_H - 6} y2={height} stroke="var(--danger)" strokeWidth={1.5} />
             <rect x={x(now) - 17} y={1} width={34} height={15} rx={7} fill="var(--danger)" />
@@ -168,6 +216,14 @@ export function Swimlanes({
           </g>
         ) : null}
       </svg>
+    </div>
+      <ZoomControls
+        onIn={() => zoom.zoomAt(1.6)}
+        onOut={() => zoom.zoomAt(1 / 1.6)}
+        onFit={zoom.fit}
+        fitted={zoom.isFit}
+        hint="or Ctrl + scroll; drag to pan"
+      />
     </div>
   );
 }

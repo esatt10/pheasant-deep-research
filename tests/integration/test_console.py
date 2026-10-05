@@ -354,3 +354,245 @@ def test_a_replay_position_shows_the_run_as_it_stood(fleet_run: Path) -> None:
     assert then["custody"]["indexed"] == 0 and now["custody"]["indexed"] > 0
     assert then["custody"]["awaiting_claim"] > 0
     assert not then["arms"] and now["arms"]
+
+
+# ---------------------------------------------------------------------------
+# every agent's trace
+# ---------------------------------------------------------------------------
+
+
+def _walk(spans: list[dict]) -> Iterator[dict]:
+    for span in spans:
+        yield span
+        yield from _walk(span["children"])
+
+
+def test_every_event_lands_in_exactly_one_actors_trace(fleet_run: Path) -> None:
+    from pheasant_lab.console.traces import RunTraces
+
+    traces = RunTraces(fleet_run)
+    actors = traces.actors()
+    kinds = {row["kind"] for row in actors}
+    assert kinds == {"orchestration", "agent", "arm"}
+
+    seen: list[str] = []
+    for row in actors:
+        trace = traces.trace(row["actor"])
+        placed = [e["event_id"] for s in _walk(trace["spans"]) for e in s["events"]]
+        loose = [e["event_id"] for e in trace["events"]]
+        assert len(placed) + len(loose) == row["events"]
+        seen += placed + loose
+    events = (fleet_run / "raw" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    assert sorted(seen) == sorted(json.loads(line)["event_id"] for line in events)
+
+
+def test_an_arms_trace_carries_its_answers_and_its_mcp_traffic(fleet_run: Path) -> None:
+    from pheasant_lab.console.traces import RunTraces
+
+    traces = RunTraces(fleet_run)
+    trace = traces.trace("arm:P0")
+    spans = list(_walk(trace["spans"]))
+    assert spans and all(s["name"] == "arm.answer" for s in spans)
+    # Every P0 event sits in the span of its own question, never another's.
+    for span in spans:
+        for event in span["events"]:
+            if event["question_id"]:
+                assert event["question_id"] == span["attributes"]["question_id"]
+    calls = [e for s in spans for e in s["events"] if "mcp_call" in e]
+    assert calls, "P0 searched the region, so its trace holds MCP calls"
+    call = traces.mcp_call(calls[0]["mcp_call"])
+    assert call["request"]["method"] == "tools/call" and call["response"]["result"]
+    assert call["tool"] == calls[0]["payload"]["tool"]
+    answers = {a["question_id"]: a for a in trace["answers"]}
+    assert set(answers) == {s["attributes"]["question_id"] for s in spans}
+    assert all(a["question"] for a in answers.values())
+
+
+def test_a_branchs_trace_carries_the_claims_it_extracted(fleet_run: Path) -> None:
+    from pheasant_lab.console.traces import RunTraces
+
+    traces = RunTraces(fleet_run)
+    branches = [row for row in traces.actors() if row["kind"] == "agent"]
+    claims = [len(traces.trace(row["actor"])["claims"]) for row in branches]
+    total = len((fleet_run / "raw" / "claims.jsonl").read_text(encoding="utf-8").splitlines())
+    assert sum(claims) == total > 0
+
+
+def test_the_trace_routes_answer_and_refuse(console: str, fleet_run: Path) -> None:
+    status, body = _get(f"{console}/api/runs/{fleet_run.name}/traces")
+    assert status == 200 and body["actors"][0]["actor"] == "orchestration"
+    status, trace = _get(f"{console}/api/runs/{fleet_run.name}/traces/arm%3AP0")
+    assert status == 200 and trace["actor"] == "arm:P0"
+    assert _get(f"{console}/api/runs/{fleet_run.name}/traces/arm%3AZ9")[0] == 404
+    assert _get(f"{console}/api/runs/{fleet_run.name}/mcp/0")[0] == 200
+    assert _get(f"{console}/api/runs/{fleet_run.name}/mcp/999999")[0] == 404
+
+
+# ---------------------------------------------------------------------------
+# adding a research topic
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def project(tmp_path: Path) -> Path:
+    """A project root of its own, so a written topics file never lands in the repo."""
+
+    import shutil
+
+    shutil.copytree(
+        REPO_ROOT / "configs",
+        tmp_path / "configs",
+        ignore=shutil.ignore_patterns("topics.local.yaml"),
+    )
+    return tmp_path
+
+
+TOPIC = {
+    "id": "topic-solid-state-dendrites",
+    "title": "Solid-state battery dendrite suppression",
+    "seed_terms": ["lithium dendrite solid electrolyte", " ", "garnet LLZO interphase"],
+    "date_range": {"from": "2018-01-01", "to": ""},
+    "facets": [
+        {"id": "interphase", "label": "Interphase chemistry", "weight": 3},
+        {"id": "pressure", "label": "Stack pressure", "weight": 2},
+    ],
+    "source_authority": {
+        "preferred_types": ["journal_article", "review"],
+        "minimum_peer_reviewed": 2,
+    },
+}
+
+
+def test_a_topic_is_written_beside_the_current_ones_and_the_config_resolves(project: Path) -> None:
+    from pheasant_lab.console.topics import LOCAL_TOPICS, add_topic, topic_rows
+
+    config = project / "configs" / "demo.yaml"
+    shipped = (project / "configs" / "topics.demo.yaml").read_text(encoding="utf-8")
+    result = add_topic(project, config, {}, TOPIC)
+
+    assert result["override"] == f"experiment.topics_file={LOCAL_TOPICS}"
+    assert (project / "configs" / "topics.demo.yaml").read_text(encoding="utf-8") == shipped
+    resolved = load_config(
+        config, overrides={"experiment.topics_file": LOCAL_TOPICS}, project_root=project
+    )
+    ids = [topic.id for topic in resolved.topics]
+    assert ids == ["topic-tardigrade-radiotolerance", TOPIC["id"]]
+    added = resolved.topics[1]
+    assert added.seed_terms == ["lithium dendrite solid electrolyte", "garnet LLZO interphase"]
+    assert added.date_range.from_ == "2018-01-01" and added.date_range.to is None
+
+    listed = topic_rows(project, config, {"experiment.topics_file": LOCAL_TOPICS})
+    assert listed["topics_file"] == LOCAL_TOPICS and len(listed["topics"]) == 2
+    assert listed["topics"][1]["date_range"] == {"from": "2018-01-01", "to": None}
+
+    # A second topic is added to the local file, not to the shipped one again.
+    second = dict(TOPIC, id="topic-second", title="Second")
+    add_topic(project, config, {"experiment.topics_file": LOCAL_TOPICS}, second)
+    again = topic_rows(project, config, {"experiment.topics_file": LOCAL_TOPICS})
+    assert [t["id"] for t in again["topics"]][-2:] == [TOPIC["id"], "topic-second"]
+
+
+@pytest.mark.parametrize(
+    ("patch", "message"),
+    [
+        ({"facets": []}, "no facets"),
+        ({"id": "Topic With Spaces"}, "lowercase"),
+        ({"facets": [{"id": "a-b", "label": "x", "weight": 0}]}, "weights are positive"),
+        ({"facets": [{"id": "dup", "label": "x"}, {"id": "dup", "label": "y"}]}, "repeats"),
+        ({"id": "topic-tardigrade-radiotolerance"}, "already exists"),
+        ({"surprise": True}, "surprise"),
+    ],
+)
+def test_a_topic_the_cli_would_refuse_is_refused_and_nothing_is_written(
+    project: Path, patch: dict, message: str
+) -> None:
+    from pydantic import ValidationError
+
+    from pheasant_lab.console.topics import LOCAL_TOPICS, add_topic
+
+    with pytest.raises((ValueError, ValidationError), match=message):
+        add_topic(project, project / "configs" / "demo.yaml", {}, {**TOPIC, **patch})
+    assert not (project / LOCAL_TOPICS).exists()
+
+
+def test_the_topic_routes_list_add_and_refuse(
+    project: Path, fleet_run: Path, tmp_path: Path
+) -> None:
+    server = serve(
+        host="127.0.0.1",
+        port=0,
+        project_root=project,
+        output_root=fleet_run.parent,
+        default_config="configs/demo.yaml",
+        ui_dist=tmp_path / "no-ui",
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+
+    def post(body: dict) -> tuple[int, dict]:
+        request = urllib.request.Request(
+            f"{base}/api/topics",
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return response.status, json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            return error.code, json.loads(error.read())
+
+    try:
+        status, listed = _get(f"{base}/api/topics?config=configs/demo.yaml")
+        assert status == 200 and listed["topics_file"] == "configs/topics.demo.yaml"
+        status, created = post({"config": "configs/demo.yaml", "topic": TOPIC})
+        assert status == 201 and created["count"] == 2
+        status, refused = post({"config": "configs/demo.yaml", "topic": {**TOPIC, "facets": []}})
+        assert status == 400 and "facet" in refused["detail"]
+        status, listed = _get(
+            f"{base}/api/topics?config=configs/demo.yaml&set={created['override']}"
+        )
+        assert [t["id"] for t in listed["topics"]][-1] == TOPIC["id"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+# ---------------------------------------------------------------------------
+# a reload on any tab is the app, never JSON
+# ---------------------------------------------------------------------------
+
+
+def test_every_console_route_reloads_to_the_app(fleet_run: Path, tmp_path: Path) -> None:
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<!doctype html><div id=root></div>", encoding="utf-8")
+    server = serve(
+        host="127.0.0.1",
+        port=0,
+        project_root=REPO_ROOT,
+        output_root=fleet_run.parent,
+        default_config="configs/demo.yaml",
+        ui_dist=dist,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    run = fleet_run.name
+    # The routes ui/src/App.tsx declares, with real parameters.
+    app = (REPO_ROOT / "ui" / "src" / "App.tsx").read_text(encoding="utf-8")
+    import re
+
+    declared = set(re.findall(r'<Route path="([^"*]+)"', app))
+    paths = {p.replace(":runId", run).replace(":actor", "arm%3AP0") for p in declared}
+    assert {"/", "/configure", f"/reports/{run}/traces/arm%3AP0"} <= paths
+    try:
+        for path in sorted(paths):
+            with urllib.request.urlopen(f"{base}{path}", timeout=10) as response:
+                assert response.status == 200, path
+                assert response.headers["Content-Type"].startswith("text/html"), path
+                assert b"id=root" in response.read(), path
+    finally:
+        server.shutdown()
+        server.server_close()
