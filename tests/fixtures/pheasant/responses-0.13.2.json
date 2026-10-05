@@ -11,9 +11,9 @@
     "git_branch": null,
     "git_commit": null,
     "id": "file:swarm-lab-literature:topic-tardigrade-radiotolerance/10.5555_synthetic.dsup.2018.009.md:branch=none",
-    "last_indexed_at": "2026-10-05T13:27:06Z",
+    "last_indexed_at": "2026-10-05T17:48:23Z",
     "mime_type": "text/markdown",
-    "mtime": "2026-10-05T13:26:55Z",
+    "mtime": "2026-10-05T17:48:22Z",
     "path": "/state/uploads/swarm-lab-literature/topic-tardigrade-radiotolerance/10.5555_synthetic.dsup.2018.009.md",
     "relative_path": "topic-tardigrade-radiotolerance/10.5555_synthetic.dsup.2018.009.md",
     "sha256": "dea2441c800a417ab56850e1c51ee0c1c49cf59a9f93ef9086e7ac61712a9ea4",
@@ -34,7 +34,7 @@
     },
     "depth": {
       "dead": 0,
-      "done": 3,
+      "done": 2,
       "inflight": 0,
       "pending": 2
     },
@@ -45,7 +45,7 @@
       {
         "attempts": 0,
         "claimed_by": null,
-        "enqueued_at": "2026-10-05T13:29:36.360806+00:00",
+        "enqueued_at": "2026-10-05T18:08:43.950813+00:00",
         "last_error": null,
         "max_attempts": 3,
         "mode": "incremental",
@@ -53,13 +53,13 @@
         "source": "agent-memory",
         "state": "awaiting_claim",
         "task_id": "idx-80b166f68a94b8c74547cffb",
-        "visible_at": "2026-10-05T13:29:36.360806+00:00",
+        "visible_at": "2026-10-05T18:08:43.950813+00:00",
         "waiting_seconds": 0.0
       },
       {
         "attempts": 0,
         "claimed_by": null,
-        "enqueued_at": "2026-10-05T13:29:36.385948+00:00",
+        "enqueued_at": "2026-10-05T18:08:43.965105+00:00",
         "last_error": null,
         "max_attempts": 3,
         "mode": "incremental",
@@ -67,7 +67,7 @@
         "source": "fixture-wire",
         "state": "awaiting_claim",
         "task_id": "idx-8f22788ad66e3bf30b967203",
-        "visible_at": "2026-10-05T13:29:36.385948+00:00",
+        "visible_at": "2026-10-05T18:08:43.965105+00:00",
         "waiting_seconds": 0.0
       }
     ]
@@ -76,17 +76,17 @@
     "created": true,
     "outcome": "created",
     "record": {
-      "asserted_at": "2026-10-05T13:29:36Z",
+      "asserted_at": "2026-10-05T18:08:43Z",
       "kind": "fact",
-      "path": "/memory/org/mem-20261005T132936Z-5035fe6c676273e4.md",
-      "record_id": "mem-20261005T132936Z-5035fe6c676273e4",
+      "path": "/memory/org/mem-20261005T180843Z-5035fe6c676273e4.md",
+      "record_id": "mem-20261005T180843Z-5035fe6c676273e4",
       "schema_version": 2,
       "scope": "org",
       "subject": null,
       "supersedes": null,
       "tags": [],
       "text": "fixture fact",
-      "valid_from": "2026-10-05T13:29:36Z",
+      "valid_from": "2026-10-05T18:08:43Z",
       "valid_until": null,
       "written_by": "pheasant-swarm-lab"
     },
@@ -97,14 +97,14 @@
       "task_id": "idx-80b166f68a94b8c74547cffb"
     }
   },
-  "note": "Responses captured from a running pheasant 0.13.2; host paths normalised to /state. Captured from pheasant-kb main at f326f6d (esatt10/pheasant-kb#98), the content of release 0.13.2: the release commit only rewrites version strings, so this build still reports 0.13.1. Role-split region: an api replica with a graph-service replica and a local index queue, no indexer running during the capture, so the sync is queued and the index tasks are unclaimed.",
+  "note": "Responses captured from a running pheasant 0.13.2; host paths normalised to /state. Role-split region: an api replica with a graph-service replica and a local index queue, no indexer running during the capture, so every sync - the memory write's included - is queued and the index tasks are unclaimed.",
   "register_source": {
     "knowledge_base": "pheasant-lab",
     "provenance": {
       "client_id": null,
       "config_update_required": true,
       "persistence": "runtime_state",
-      "registered_at": "2026-10-05T13:29:36Z",
+      "registered_at": "2026-10-05T18:08:43Z",
       "registered_by": "mcp",
       "transport": "mcp"
     },
@@ -236,7 +236,7 @@
       "text": 6,
       "vector": 0
     },
-    "graph_generation": "89ca6237389ffa2a",
+    "graph_generation": "698f754b02377321",
     "knowledge_base": "pheasant-lab",
     "lineage": {
       "knowledge_base": "pheasant-lab",
@@ -253,7 +253,7 @@
           "source_name": null,
           "source_types": null
         },
-        "graph_generation": "89ca6237389ffa2a",
+        "graph_generation": "698f754b02377321",
         "max_results": 2,
         "memory": {
           "enabled": true,
@@ -296,7 +296,7 @@
         "snapshot_id": null
       },
       "timing": {
-        "retrieval_ms": 11.063,
+        "retrieval_ms": 12.339,
         "returned": 2,
         "truncated": true
       },
@@ -390,7 +390,7 @@
       "seeds": 2,
       "seeds_skipped": 0
     },
-    "graph_generation": "89ca6237389ffa2a",
+    "graph_generation": "698f754b02377321",
     "knowledge_base": "pheasant-lab",
     "lineage": {
       "knowledge_base": "pheasant-lab",
@@ -407,7 +407,7 @@
           "source_name": null,
           "source_types": null
         },
-        "graph_generation": "89ca6237389ffa2a",
+        "graph_generation": "698f754b02377321",
         "max_results": 2,
         "memory": {
           "enabled": true,
@@ -450,7 +450,7 @@
         "snapshot_id": null
       },
       "timing": {
-        "retrieval_ms": 8.58,
+        "retrieval_ms": 5.416,
         "returned": 2,
         "truncated": true
       },
@@ -681,7 +681,7 @@
       }
     ]
   },
-  "server_version": "0.13.1",
+  "server_version": "0.13.2",
   "submit_documents": {
     "accepted": [
       {
@@ -703,9 +703,9 @@
         "retryable": false,
         "source_name": "fixture-wire",
         "submission_id": "submission-fixture",
-        "submissions": 1,
-        "submitted_at": "2026-10-05T13:29:36Z",
-        "updated_at": "2026-10-05T13:29:36Z"
+        "submissions": 2,
+        "submitted_at": "2026-10-05T17:48:08Z",
+        "updated_at": "2026-10-05T18:08:43Z"
       }
     ],
     "directory": "/state/uploads/fixture-wire",
@@ -729,9 +729,9 @@
         "retryable": false,
         "source_name": "fixture-wire",
         "submission_id": "submission-fixture",
-        "submissions": 1,
-        "submitted_at": "2026-10-05T13:29:36Z",
-        "updated_at": "2026-10-05T13:29:36Z"
+        "submissions": 2,
+        "submitted_at": "2026-10-05T17:48:08Z",
+        "updated_at": "2026-10-05T18:08:43Z"
       }
     ],
     "source_name": "fixture-wire",
