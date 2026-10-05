@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import type { TopicDoc, TopicList } from "../types";
+import type { TopicDoc, TopicDraft, TopicList } from "../types";
 
 /**
  * Research topics: the ones the config already sees, and a form to add one.
@@ -11,6 +11,12 @@ import type { TopicDoc, TopicList } from "../types";
  * ``--set experiment.topics_file=...``, so the argv still tells the whole
  * story. The server validates with the same model ``load_config`` uses; this
  * form only stops the obvious before a round trip.
+ *
+ * A topic can start from an **intent** — what you want to find out, in your
+ * own words — instead of (or as well as) seed terms. "Draft from intent" asks
+ * the planner's model, through the CLI's `draft-topic` under its own small
+ * budget, to propose a title, seed terms and facets for you to edit. The
+ * intent is saved on the topic, and the planner reads it on every run.
  */
 
 const SOURCE_TYPES = [
@@ -55,6 +61,7 @@ function toYaml(topic: TopicDoc): string {
   const lines = [
     `- id: ${topic.id || "…"}`,
     `  title: ${q(topic.title || "…")}`,
+    ...(topic.intent ? [`  intent: ${JSON.stringify(topic.intent)}`] : []),
     "  seed_terms:",
     ...(topic.seed_terms.length ? topic.seed_terms.map((t) => `    - ${q(t)}`) : ["    []"]),
     `  date_range: { from: ${topic.date_range.from ?? "null"}, to: ${topic.date_range.to ?? "null"} }`,
@@ -130,6 +137,8 @@ export function Topics({
       {error ? <div className="card__body"><span className="pill pill--danger" style={{ whiteSpace: "normal" }}>{error}</span></div> : null}
       {adding ? (
         <TopicForm
+          config={config}
+          set={set}
           existing={list?.topics.map((t) => t.id) ?? []}
           onCancel={() => setAdding(false)}
           onSave={async (topic) => {
@@ -150,6 +159,7 @@ export function Topics({
                 <b>{topic.title}</b>
               </div>
               <div className="mono muted small topic__id">{topic.id}</div>
+              {topic.intent ? <div className="topic__intent">“{topic.intent}”</div> : null}
               <div className="topic__facets">
                 {topic.facets.map((f) => (
                   <span key={f.id} className="pill" title={f.id}>
@@ -158,7 +168,9 @@ export function Topics({
                 ))}
               </div>
               <div className="muted small">
-                {topic.seed_terms.length} seed term{topic.seed_terms.length === 1 ? "" : "s"}
+                {topic.seed_terms.length
+                  ? `${topic.seed_terms.length} seed term${topic.seed_terms.length === 1 ? "" : "s"}`
+                  : "intent only · the planner derives the vocabulary"}
                 {topic.date_range.from || topic.date_range.to ? ` · ${topic.date_range.from ?? "…"} → ${topic.date_range.to ?? "now"}` : ""}
                 {topic.source_authority.preferred_types.length ? ` · prefers ${topic.source_authority.preferred_types.join(", ")}` : ""}
               </div>
@@ -171,14 +183,21 @@ export function Topics({
 }
 
 function TopicForm({
+  config,
+  set,
   existing,
   onCancel,
   onSave,
 }: {
+  config: string;
+  set: string[];
   existing: string[];
   onCancel: () => void;
   onSave: (topic: TopicDoc) => Promise<void>;
 }) {
+  const [intent, setIntent] = useState("");
+  const [drafting, setDrafting] = useState(false);
+  const [draft, setDraft] = useState<TopicDraft | null>(null);
   const [title, setTitle] = useState("");
   const [id, setId] = useState("");
   const [idEdited, setIdEdited] = useState(false);
@@ -197,6 +216,7 @@ function TopicForm({
     () => ({
       id: topicId,
       title: title.trim(),
+      intent: intent.trim() || null,
       seed_terms: seeds.split("\n").map((s) => s.trim()).filter(Boolean),
       date_range: { from: from || null, to: to || null },
       facets: facets
@@ -204,7 +224,7 @@ function TopicForm({
         .map((f) => ({ id: f.idEdited ? f.id : slug(f.label), label: f.label.trim(), weight: Number(f.weight) || 1 })),
       source_authority: { family_key: families, preferred_types: types, minimum_peer_reviewed: Number(minimum) || 0 },
     }),
-    [topicId, title, seeds, from, to, facets, families, types, minimum],
+    [topicId, title, intent, seeds, from, to, facets, families, types, minimum],
   );
 
   const problems: string[] = [];
@@ -212,12 +232,36 @@ function TopicForm({
   if (!topic.id) problems.push("an id");
   if (existing.includes(topic.id)) problems.push(`an id other than ${topic.id}, which already exists`);
   if (!topic.facets.length) problems.push("at least one facet — coverage is measured against them");
-  if (!topic.seed_terms.length) problems.push("a seed term");
+  if (!topic.seed_terms.length && !topic.intent) problems.push("seed terms or an intent");
 
   const setFacet = (index: number, patch: Partial<FacetDraft>) =>
     setFacets((rows) => rows.map((row, i) => (i === index ? { ...row, ...patch } : row)));
   const toggle = (list: string[], value: string, apply: (v: string[]) => void) =>
     apply(list.includes(value) ? list.filter((v) => v !== value) : [...list, value]);
+
+  // Fills the form from a draft. Everything stays editable; nothing is saved.
+  const runDraft = async () => {
+    setDrafting(true);
+    setError(null);
+    try {
+      const given = seeds.split("\n").map((t) => t.trim()).filter(Boolean);
+      const next = await api.draftTopic({ config, set, intent, seed_terms: given });
+      setDraft(next);
+      setTitle(next.title);
+      setId(next.id);
+      setIdEdited(true);
+      setSeeds(next.seed_terms.join("\n"));
+      setFrom(next.date_range.from ?? "");
+      setTo(next.date_range.to ?? "");
+      setFacets(
+        next.facets.map((f) => ({ label: f.label, id: f.id, idEdited: true, weight: String(f.weight) })),
+      );
+    } catch (caught) {
+      setError((caught as Error).message);
+    } finally {
+      setDrafting(false);
+    }
+  };
 
   const save = async () => {
     setBusy(true);
@@ -233,7 +277,35 @@ function TopicForm({
 
   return (
     <div className="topicform" aria-label="New research topic">
-      <div className="topicform__grid">
+      <div className="fld">
+        <label htmlFor="topic-intent">
+          Intent <span className="muted">· what you want to find out, in your own words — optional if you give seed terms</span>
+        </label>
+        <textarea
+          id="topic-intent"
+          className="input"
+          rows={3}
+          placeholder="e.g. I want to understand how solid-state lithium batteries suppress dendrite growth, whether stack pressure or interphase chemistry matters more, and which critical current density claims failed to replicate."
+          value={intent}
+          onChange={(e) => setIntent(e.target.value)}
+        />
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+          <button className="btn btn--small" disabled={drafting || intent.trim().length < 12} onClick={() => void runDraft()}>
+            {drafting ? <span className="spinner" /> : "✦"} Draft from intent
+          </button>
+          <span className="h" style={{ margin: 0 }}>
+            the planner's model proposes a title, seed terms and facets for you to edit — saved with the topic, the intent is the planner's brief on every run
+          </span>
+        </div>
+        {draft ? (
+          <div className={`pill ${draft.drafted_by.deterministic ? "pill--warn" : "pill--info"}`} style={{ whiteSpace: "normal", marginTop: 8 }}>
+            {draft.drafted_by.deterministic
+              ? `Offline draft (replay provider). ${draft.notes}`
+              : `Drafted by ${draft.drafted_by.provider} · ${draft.drafted_by.model} for $${draft.drafted_by.cost_usd.toFixed(4)}${draft.notes ? ` — ${draft.notes}` : ""}`}
+          </div>
+        ) : null}
+      </div>
+      <div className="topicform__grid" style={{ marginTop: 12 }}>
         <div className="fld" style={{ gridColumn: "1 / 3" }}>
           <label htmlFor="topic-title">Title</label>
           <input id="topic-title" className="input" placeholder="e.g. Solid-state battery dendrite suppression" value={title} onChange={(e) => setTitle(e.target.value)} />
@@ -253,7 +325,7 @@ function TopicForm({
           <div className="h">{idEdited ? "set by you" : "from the title"} · lowercase, digits, hyphens</div>
         </div>
         <div className="fld" style={{ gridColumn: "1 / 3", gridRow: "span 2" }}>
-          <label htmlFor="topic-seeds">Seed terms <span className="muted">· one per line</span></label>
+          <label htmlFor="topic-seeds">Seed terms <span className="muted">· one per line · optional with an intent</span></label>
           <textarea
             id="topic-seeds"
             className="input mono"

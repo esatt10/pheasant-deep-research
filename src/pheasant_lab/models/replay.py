@@ -19,6 +19,7 @@ Two consequences are stated wherever its numbers appear:
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -37,6 +38,14 @@ from .base import ModelProvider, ModelRequest, ModelResponse
 
 MAX_CLAIMS = 6
 MIN_TERM_HITS = 2
+_INTENT_LEAD = re.compile(
+    r"^\s*(?:i\s+(?:want|need|would like)\s+to\s+(?:know|understand|find out|learn)\s+"
+    r"(?:about\s+|whether\s+|if\s+|how\s+|why\s+|what\s+)?|please\s+|tell me\s+|"
+    r"(?:which|how|what|why|whether|does|do|is|are)\s+)",
+    re.IGNORECASE,
+)
+_CLAUSES = re.compile(r"[;,.?!]|\band\b|\bversus\b|\bvs\.?\b|\bwhether\b", re.IGNORECASE)
+_CONTESTED = re.compile(r"contest|disput|replicat|controvers|disagree", re.IGNORECASE)
 
 
 class ReplayProvider(ModelProvider):
@@ -69,6 +78,10 @@ class ReplayProvider(ModelProvider):
         topic = request.context.get("topic") or {}
         facets: Sequence[Mapping[str, Any]] = topic.get("facets") or []
         seeds: list[str] = list(topic.get("seed_terms") or [])
+        if topic.get("intent"):
+            # The brief's own content words widen the vocabulary; with no
+            # seed terms they are the vocabulary.
+            seeds = list(dict.fromkeys([*seeds, *salient_terms(str(topic["intent"]), limit=6)]))
         budget = int(request.context.get("max_subtopics") or len(facets))
 
         subtopics: list[dict[str, Any]] = []
@@ -92,6 +105,62 @@ class ReplayProvider(ModelProvider):
                 }
             )
         return {"subtopics": subtopics}
+
+    # -- topic drafting ----------------------------------------------------
+    def _schema_topic_draft(self, request: ModelRequest) -> dict[str, Any]:
+        """A rule-based draft from an intent: its own clauses become facets.
+
+        No vocabulary expansion is possible without prior knowledge, so the
+        seed terms are the intent's own content phrases and the notes say so.
+        It exists so the console's draft flow runs offline end to end, not as
+        a suggestion anybody should keep unedited.
+        """
+
+        intent = str(request.context.get("intent") or "")
+        given = [str(t) for t in request.context.get("seed_terms") or [] if str(t).strip()]
+        limit = int(request.context.get("max_facets") or 5)
+        clauses = [_lead_stripped(c).strip(" ,;:.?!") for c in _CLAUSES.split(intent)]
+        clauses = [c for c in clauses if len(content_terms(c)) >= 2]
+        first = clauses[0] if clauses else intent
+        title = truncate(first[:1].upper() + first[1:], 90)
+
+        phrases: list[str] = []
+        for clause in clauses:
+            words = content_terms(clause)
+            for start in range(0, len(words), 3):
+                phrase = " ".join(words[start : start + 3])
+                if len(phrase.split()) >= 2:
+                    phrases.append(phrase)
+        seeds = list(dict.fromkeys([*given, *phrases]))[:8]
+
+        facets: list[dict[str, Any]] = []
+        for clause in clauses:
+            label = truncate(clause[:1].upper() + clause[1:], 70)
+            facets.append(
+                {
+                    "id": "-".join(content_terms(label)[:4]),
+                    "label": label,
+                    "weight": 3 if not facets else 2,
+                    "rationale": "a clause of the stated intent",
+                }
+            )
+        if not any(_CONTESTED.search(f["label"]) for f in facets):
+            facets.append(
+                {
+                    "id": "contested-claims",
+                    "label": "Contested claims and failed replications",
+                    "weight": 1,
+                    "rationale": "a corpus holding only agreement was searched in one vocabulary",
+                }
+            )
+        return {
+            "title": title,
+            "seed_terms": seeds,
+            "facets": facets[:limit],
+            "date_range": {"from": None, "to": None},
+            "notes": "Drafted offline by rule: facets are the intent's own clauses and the seed "
+            "terms its own phrases, with no vocabulary expansion. Edit before saving.",
+        }
 
     # -- researcher --------------------------------------------------------
     def _schema_research(self, request: ModelRequest) -> dict[str, Any]:
@@ -293,6 +362,15 @@ class ReplayProvider(ModelProvider):
         if not fresh:
             return {"queries": []}
         return {"queries": [" ".join(base[:4] + fresh)]}
+
+
+def _lead_stripped(clause: str) -> str:
+    """ "Why do some ..." -> "some ...": framing words carry no search terms."""
+
+    previous = None
+    while previous != clause:
+        previous, clause = clause, _INTENT_LEAD.sub("", clause)
+    return clause
 
 
 def _terminology(label: str, seeds: list[str], index: int) -> list[str]:

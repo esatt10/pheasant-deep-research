@@ -61,6 +61,10 @@ class SpanRecorder:
             self.count += 1
         self._writer.append(span.as_dict())
 
+    def sync(self) -> None:
+        if self._writer is not None:
+            self._writer.sync()
+
     def close(self) -> None:
         if self._writer is not None:
             self._writer.close()

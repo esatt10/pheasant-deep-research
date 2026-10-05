@@ -47,6 +47,20 @@ class Subtopic:
             ladder.append(term)
         return ladder[:rounds]
 
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> Subtopic:
+        return cls(
+            subtopic_id=str(payload["subtopic_id"]),
+            facet_ids=[str(f) for f in payload.get("facet_ids") or []],
+            question=str(payload.get("question") or ""),
+            terminology=[str(t) for t in payload.get("terminology") or []],
+            providers=[str(p) for p in payload.get("providers") or []],
+            date_from=payload.get("date_from"),
+            date_to=payload.get("date_to"),
+            expect_disagreement=bool(payload.get("expect_disagreement")),
+            rationale=str(payload.get("rationale") or ""),
+        )
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "subtopic_id": self.subtopic_id,
@@ -173,8 +187,14 @@ def _render(topic: Topic, max_subtopics: int) -> str:
     facets = "\n".join(f"- {f.id} (weight {f.weight}): {f.label}" for f in topic.facets)
     seeds = ", ".join(topic.seed_terms) or "(none)"
     window = topic.date_range
+    intent = (
+        f"Intent, in the person's own words (the brief - read it first):\n{topic.intent.strip()}\n"
+        if topic.intent
+        else ""
+    )
     return (
         f"Topic: {topic.title}\n"
+        f"{intent}"
         f"Seed terms: {seeds}\n"
         f"Date window: {window.from_ or 'open'} to {window.to or 'open'}\n"
         f"Facets:\n{facets}\n\n"

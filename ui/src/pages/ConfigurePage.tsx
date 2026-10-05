@@ -378,7 +378,7 @@ export function ConfigurePage({ config, onConfig }: { config?: string; onConfig:
             </div>
             <div className="card__body">
               <pre className="yaml">
-                {`pheasant-lab collect --config ${selected ?? ""}${set.map((s) => ` \\\n  --set ${s}`).join("")}${topic ? ` \\\n  --topic ${topic}` : ""}`}
+                {`pheasant-lab run --config ${selected ?? ""}${set.map((s) => ` \\\n  --set ${s}`).join("")}${topic ? ` \\\n  --topic ${topic}` : ""}`}
               </pre>
               {base && resolved && base.digest !== resolved.digest ? (
                 <div className="pill pill--warn" style={{ marginTop: 8, whiteSpace: "normal" }}>
@@ -402,7 +402,7 @@ export function ConfigurePage({ config, onConfig }: { config?: string; onConfig:
             </button>
           </div>
           <div className="muted small">
-            <b>Offline demo</b>: fixtures and the mock region, free. <b>Launch run</b>: collect → freeze → evaluate → replay → report → verify with this config, stopping at the first refusal.
+            <b>Offline demo</b>: fixtures and the mock region, free. <b>Launch run</b>: <code>pheasant-lab run</code> — collect → freeze → evaluate → replay → report → verify, resuming any stage that crashes and stopping at the first refusal. It runs detached: closing the console does not stop it, and Runs offers <b>Resume</b> for one that was interrupted.
           </div>
         </div>
       </div>

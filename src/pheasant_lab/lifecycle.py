@@ -4,6 +4,14 @@
 state; the checkpoint exists so a resumed run does not redo work it already
 paid for. Where the two disagree, the events win - which is why ``replay``
 rebuilds every projection and every metric from the events alone.
+
+Durability, stated once. Every whole-file write here (the manifest, the
+checkpoint, checksums) goes through :func:`durable_write_text`: a temp file
+unique to the writer, flushed and ``fsync``-ed, renamed over the target, and
+the directory ``fsync``-ed so the rename itself survives a power loss. A crash
+leaves the old file or the new one, never half of either. And a checkpoint is
+a *barrier*: :class:`RunState` syncs the append-only raw files before it
+writes, so a checkpoint can never claim progress the raw trace might lose.
 """
 
 from __future__ import annotations
@@ -207,18 +215,113 @@ def build_manifest(
     }
 
 
+def _fsync_directory(directory: Path) -> None:
+    """Make a rename durable. A no-op where directories cannot be opened (Windows)."""
+
+    try:
+        handle = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(handle)
+    except OSError:
+        pass
+    finally:
+        os.close(handle)
+
+
+def durable_write_text(path: Path, text: str) -> None:
+    """Replace ``path`` atomically and durably.
+
+    The temp name is unique to this writer - a fixed ``.partial`` is a
+    collision waiting for a second process - and a failed write unlinks its own
+    temp, or unique names would turn one orphan into one per attempt.
+    """
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{path.name}.{os.getpid()}.{ids.new_nonce(4)}.tmp")
+    try:
+        with temp.open("w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+        _fsync_directory(path.parent)
+    finally:
+        if temp.exists():
+            temp.unlink(missing_ok=True)
+
+
+def repair_torn_tail(path: Path, quarantine: Path) -> dict[str, Any] | None:
+    """Cut a torn final line off an append-only file, keeping the fragment.
+
+    Every record is written as one line ending in a newline, so a file whose
+    last byte is not a newline was interrupted mid-append - a killed process,
+    a full disk, a power cut. Left alone, the next reader refuses the whole
+    file and the run cannot resume. Truncated silently, a record disappears.
+    So the fragment is moved to ``quarantine`` and the cut is reported, and
+    the caller records it in the trace. Only the *tail* is ever repaired: a
+    malformed line in the middle is not a crash, it is damage, and stays an
+    error for ``verify`` to report.
+    """
+
+    if not path.is_file():
+        return None
+    size = path.stat().st_size
+    if size == 0:
+        return None
+    with path.open("rb+") as handle:
+        handle.seek(size - 1)
+        if handle.read(1) == b"\n":
+            return None
+        # Walk back to the last complete line.
+        position = size
+        chunk = 65536
+        keep = 0
+        while position > 0:
+            start = max(0, position - chunk)
+            handle.seek(start)
+            block = handle.read(position - start)
+            index = block.rfind(b"\n")
+            if index >= 0:
+                keep = start + index + 1
+                break
+            position = start
+        handle.seek(keep)
+        fragment = handle.read()
+        quarantine.mkdir(parents=True, exist_ok=True)
+        stamp = isonow().replace(":", "").replace("-", "")
+        saved = quarantine / f"{path.name}.{stamp}.fragment"
+        saved.write_bytes(fragment)
+        handle.truncate(keep)
+        handle.flush()
+        os.fsync(handle.fileno())
+    return {
+        "file": path.name,
+        "kept_bytes": keep,
+        "fragment_bytes": len(fragment),
+        "fragment": saved.name,
+    }
+
+
 class RunState:
     """The resumable checkpoint.
 
-    Every mutation writes the whole file through a temp name unique to this
-    writer. A fixed ``.partial`` is a collision waiting for a second process,
-    and a failed write that leaves its temp behind turns one orphan into one
-    per attempt.
+    Every mutation writes the whole file through :func:`durable_write_text`.
+    ``barrier`` - the tracer's ``sync`` once a session holds one - runs first,
+    so the raw trace is on disk before any checkpoint that depends on it.
     """
 
-    def __init__(self, path: Path, data: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        path: Path,
+        data: dict[str, Any] | None = None,
+        *,
+        barrier: Any = None,
+    ) -> None:
         self.path = path
         self.data: dict[str, Any] = data if data is not None else {}
+        self.barrier = barrier
 
     @classmethod
     def load(cls, path: Path) -> RunState:
@@ -250,29 +353,15 @@ class RunState:
         return self.stage_status(stage) == "completed"
 
     def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temp = self.path.with_suffix(f".{os.getpid()}.{ids.new_nonce(4)}.tmp")
-        try:
-            temp.write_text(
-                json.dumps(self.data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-            )
-            os.replace(temp, self.path)
-        finally:
-            if temp.exists():
-                temp.unlink(missing_ok=True)
+        if self.barrier is not None:
+            self.barrier()
+        durable_write_text(
+            self.path, json.dumps(self.data, indent=2, sort_keys=True, default=str) + "\n"
+        )
 
 
 def write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(path.suffix + f".{os.getpid()}.{ids.new_nonce(4)}.tmp")
-    try:
-        temp.write_text(
-            json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8"
-        )
-        os.replace(temp, path)
-    finally:
-        if temp.exists():
-            temp.unlink(missing_ok=True)
+    durable_write_text(path, json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n")
 
 
 def read_json(path: Path) -> Any:
@@ -282,9 +371,10 @@ def read_json(path: Path) -> Any:
 def write_checksums(paths: RunPaths) -> dict[str, str]:
     """Digest every file a run produced, into ``integrity/checksums.sha256``.
 
-    Excludes the checksum file itself and the DuckDB projection: the
-    projection is derived and rebuilt, so digesting it would make a rebuilt
-    run look tampered with.
+    Excludes the checksum file itself, the DuckDB projection and the
+    supervisor's own bookkeeping: the projection is derived and rebuilt, and
+    the supervisor appends after the stages it drives have checksummed, so
+    digesting either would make an honest run look tampered with.
     """
 
     checksums: dict[str, str] = {}
@@ -292,12 +382,12 @@ def write_checksums(paths: RunPaths) -> dict[str, str]:
         if not file.is_file():
             continue
         relative = file.relative_to(paths.root).as_posix()
-        if relative.startswith("integrity/") or relative.startswith("projections/"):
+        if relative.startswith(("integrity/", "projections/", "supervisor/")):
             continue
         checksums[relative] = digest_file(file)
     paths.integrity.mkdir(parents=True, exist_ok=True)
     lines = [f"{value.removeprefix('sha256:')}  {name}" for name, value in checksums.items()]
-    (paths.integrity / "checksums.sha256").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    durable_write_text(paths.integrity / "checksums.sha256", "\n".join(lines) + "\n")
     return checksums
 
 

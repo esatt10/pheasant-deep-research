@@ -117,10 +117,19 @@ class JsonlWriter:
             if self._fsync:
                 os.fsync(self._handle.fileno())
 
+    def sync(self) -> None:
+        """Flush and ``fsync``: everything appended so far survives a power cut."""
+
+        with self._lock:
+            if not self._handle.closed:
+                self._handle.flush()
+                os.fsync(self._handle.fileno())
+
     def close(self) -> None:
         with self._lock:
             if not self._handle.closed:
                 self._handle.flush()
+                os.fsync(self._handle.fileno())
                 self._handle.close()
 
     def __enter__(self) -> JsonlWriter:
@@ -236,6 +245,9 @@ class EventLog:
             self._writer.append(event.as_dict())
         return event
 
+    def sync(self) -> None:
+        self._writer.sync()
+
     def close(self) -> None:
         self._writer.close()
 
@@ -269,6 +281,18 @@ class Tracer:
         self.run_id = run_id
         self.config_digest = config_digest
         self.redactor = redactor
+        # A resumed run first repairs what the previous process may have
+        # left half-written: an append interrupted by a kill, a full disk or
+        # a power cut leaves a final line with no newline, and every reader
+        # after it would refuse the whole file.
+        self.repairs: list[dict[str, Any]] = []
+        if resume and not read_only:
+            from ..lifecycle import repair_torn_tail
+
+            for raw in sorted(paths.raw.glob("*.jsonl")):
+                repaired = repair_torn_tail(raw, paths.integrity / "torn")
+                if repaired is not None:
+                    self.repairs.append(repaired)
         events_path = paths.raw_file("events.jsonl")
         factory = EventLog.resume if resume else EventLog
         self.events: EventLog = factory(
@@ -434,6 +458,23 @@ class Tracer:
         if self.read_only:
             return
         self.writer(filename).append(self.redactor.payload(dict(record)))
+
+    def sync(self) -> None:
+        """The durability barrier: every raw file ``fsync``-ed.
+
+        Called before every checkpoint write, so ``state.json`` never names
+        work whose evidence is still in a page cache.
+        """
+
+        if self.read_only:
+            return
+        self.events.sync()
+        self.spans.sync()
+        self.errors.sync()
+        with self._writer_lock:
+            writers = list(self._writers.values())
+        for writer in writers:
+            writer.sync()
 
     def close(self) -> None:
         self.events.close()

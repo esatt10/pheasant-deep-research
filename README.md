@@ -346,52 +346,97 @@ make ui                                   # once: build the UI (needs Node 18+)
 uv run pheasant-lab serve                 # http://127.0.0.1:8770
 ```
 
-A browser surface over everything above, in pheasant's own visual language:
+A browser surface over everything above, in pheasant's own visual language.
+The full tour is [docs/console.md](docs/console.md).
+
+![The live view: a run's swarm, its region, its swimlanes and its event stream](docs/images/live-claimed.png)
 
 * **Configure** — a form over the YAML. Every change is a `--set`, shown as the
-  exact argv it will run; `plan` projects the cost as you edit, `doctor` runs
-  on demand, and a change that moves the config digest says so.
-* **Research topics** — on Configure, **+ New topic** takes a title, seed
-  terms, a publication window, the facets coverage is measured against (label
-  and weight) and the source authority. Saving validates it with the same
-  model `load_config` uses, writes the current topics plus the new one to
-  `configs/topics.local.yaml` (git-ignored; the shipped topics files are never
-  rewritten), and points the run at it with
-  `--set experiment.topics_file=configs/topics.local.yaml --topic <id>`.
+  exact command it will run; `plan` projects the cost as you edit, `doctor`
+  runs on demand, and a change that moves the config digest says so.
+* **Research topics** — start from an **intent** (what you want to find out,
+  in your own words), from seed terms, or both. **Draft from intent** asks the
+  planner's model (`pheasant-lab draft-topic`, under its own small budget) for
+  a title, seed terms and facets to edit. Saving writes the current topics
+  plus the new one to `configs/topics.local.yaml` (git-ignored; the shipped
+  topics files are never rewritten). The intent is kept as the planner's
+  brief on every run.
+
+  ![Drafting a topic from an intent](docs/images/topic-intent-drafted.png)
+
 * **Live** — a run as it happens, from its append-only trace: phases, the
   swarm as a tree, a **constellation** (research branches with their sources
   in orbit, coloured by custody, travelling to a Pheasant node drawn as
   landing → index queue → indexed) and **swimlanes** (one per agent, the
   region and the indexer), the raw event stream, budget, facet coverage and a
-  custody funnel. A replay scrubber folds the same trace at any earlier
-  sequence number.
+  custody funnel. Every visual zooms, pans and fits. A replay scrubber folds
+  the same trace at any earlier sequence number.
 * **Region awareness** — on a role-split Pheasant a sync is *published*, and
   until an indexer claims it the documents are accepted and not searchable.
   The lab records that interval (`ingest.sync`, `ingest.barrier` and, where
-  the region offers `get_index_queue`, each task's claim state), and the
-  console shows it as its own state — a hatched "awaiting claim" bar, a
-  notice, an amber funnel column — rather than as an unexplained wait. The
-  top-bar chip asks the region's `/ready` and `/queue` directly.
-* **Runs** and **Reports** — every run directory, and its Markdown reports.
+  the region offers `get_index_queue`, each task's claim state). The console
+  shows it as its own state — a hatched "awaiting claim" bar, a notice, an
+  amber funnel column — rather than as an unexplained wait.
+
+  ![Pre-claim: queued, and no indexer has claimed it yet](docs/images/live-preclaim.png)
+
 * **Agent traces** (Reports → Agent traces) — every actor's whole record: the
-  orchestration, each research branch and each arm. A waterfall of its span
-  tree on the run's clock, every event inside the span that recorded it, each
-  MCP call's request and response as the region answered, an arm's question,
-  answer, claims and reads, and a branch's extracted claims. Read from
-  `raw/*.jsonl`, never recomputed.
+  orchestration, each research branch and each arm. Each trace shows:
+  * a waterfall of its span tree, with every event in the span that recorded it;
+  * each MCP call's request and response, as the region answered;
+  * for an arm, its question, answer, claims and reads;
+  * for a branch, the claims it extracted.
 
-The constellation, the swimlanes and the trace waterfall zoom (**+**/**−**, or
-scroll — Ctrl + scroll on the timelines), pan (drag) and **Fit**. Every page
-is a real URL: reloading `/configure`, `/live/<run>` or
-`/reports/<run>/traces/<agent>` reloads that page.
+  ![An arm's trace: its answer, and the MCP call behind it](docs/images/traces-answer-mcp.png)
 
-Runs start as ordinary CLI child processes, so a run launched from a browser
-and one typed in a terminal leave identical traces, and closing the console
-does not stop a run. It binds loopback; it can start paid runs.
+* **Runs** — every run directory. **Launch run** and **Resume** start the
+  supervised pipeline detached: closing or restarting the console does not
+  stop a run, and an interrupted one resumes from its checkpoint.
+
+Every page is a real URL, so a reload lands where it was. The console binds
+loopback because it can start paid runs.
 
 `--set mock_claim_seconds=8` makes the offline mock behave like a fleet (a
-sync is queued and claimed eight seconds later), which is how the pre-claim
+sync is queued and claimed eight seconds later). That is how the pre-claim
 path is exercised without a real region.
+
+## Persistence and durability
+
+**What persists a run:** its directory under `runs/`, and nothing else. No
+database, no broker, no service holds state a run needs.
+
+* `raw/*.jsonl` is the authoritative record and is append-only: events,
+  spans, errors, the MCP transcript, sources, claims, receipts, questions,
+  answers and proof.
+* `state.json` is a checkpoint: completed stages, collection progress at its
+  last round boundary, and the budget.
+* `run-manifest.json` records the config digest, models and prompts.
+* Metrics, reports and the DuckDB projection are derived, and rebuild from
+  `raw/`.
+* The console keeps its launch records as files under `runs/.console/`.
+
+**How it survives failure:**
+
+* Whole-file writes are atomic and `fsync`ed.
+* Every checkpoint first `fsync`s the raw files it depends on.
+* A line torn by a crash mid-append is cut, kept in `integrity/torn/`, and
+  recorded as a `run.repaired` event.
+* Transient model errors (`429`, `5xx`, timeouts) are retried with backoff.
+* Collection resumes from its last round boundary over state rehydrated from
+  `raw/`.
+* Evaluation reuses every answer it already recorded.
+* `pheasant-lab run` drives the whole pipeline and resumes any stage that
+  crashes:
+
+```bash
+pheasant-lab run --config configs/experiment.yaml --topic <id>    # a new run
+pheasant-lab run --config configs/experiment.yaml --resume <run>  # carry one on
+```
+
+A test kills the real CLI mid-collection and mid-evaluation, the way
+`SIGKILL` does. It asserts the resumed run reaches the same corpus and the
+same metrics as one that never crashed. Details, the failure table and what
+this does not cover are in [docs/durability.md](docs/durability.md).
 
 ## Layout
 
@@ -408,8 +453,11 @@ src/pheasant_lab/
   evaluation/     metric contract, proof, metrics, pairing, statistics, gates
   tracing/        events, spans, errors, lineage, DuckDB projection
   reports/        summary, arm comparison, regressions, refinements
-  console/        `pheasant-lab serve`: the live projection, launcher, region probe, HTTP
+  console/        `pheasant-lab serve`: the live projection, launcher, region probe, HTTP,
+                  topics, per-agent traces
+  supervisor.py   `pheasant-lab run`: the pipeline, resuming stages that crash
 ui/          the console's React app (built to ui/dist)
+docs/        the console tour and the durability guarantees, with screenshots
 runs/        run output (git-ignored; run content is user data)
 ```
 

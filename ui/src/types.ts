@@ -12,6 +12,12 @@ export interface RunRow {
   arms: string[] | null;
   cost_budget_usd: number | null;
   mock: boolean;
+  config: string | null;
+  overrides: string[];
+  complete: boolean;
+  interrupted: boolean;
+  live: boolean;
+  resumable: boolean;
 }
 
 export interface Phase {
@@ -191,8 +197,18 @@ export interface Launch {
   argv: string[];
   config: string;
   run_id: string | null;
-  status: "running" | "succeeded" | "completed_with_findings" | "failed" | "refused" | "stopped";
+  status:
+    | "running"
+    | "succeeded"
+    | "completed_with_findings"
+    | "failed"
+    | "refused"
+    | "stopped"
+    | "crashed_resumable"
+    | "interrupted"
+    | "ended";
   exit_code: number | null;
+  pid: number | null;
   step: string | null;
   started_at: number;
   finished_at: number | null;
@@ -353,6 +369,7 @@ export interface TopicFacet {
 export interface TopicDoc {
   id: string;
   title: string;
+  intent?: string | null;
   seed_terms: string[];
   date_range: { from: string | null; to: string | null };
   facets: TopicFacet[];
@@ -364,4 +381,17 @@ export interface TopicList {
   local_file: string;
   override: string;
   topics: TopicDoc[];
+}
+
+export interface TopicDraft extends TopicDoc {
+  notes: string;
+  facets: (TopicFacet & { rationale?: string })[];
+  drafted_by: {
+    provider: string;
+    model: string;
+    deterministic: boolean;
+    cost_usd: number;
+    input_tokens: number;
+    output_tokens: number;
+  };
 }

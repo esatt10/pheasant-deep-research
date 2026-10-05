@@ -3,18 +3,27 @@
 The console is a launcher, not a second runtime. Every run it starts is the
 ordinary CLI in a child process - the same argv a person would type, the same
 config resolution, the same budget guard - so a run started from a browser and
-one started from a terminal are indistinguishable in their trace, and the
-console can be closed without stopping the run. What it adds is bookkeeping: a
-launch id, the argv, the exit status, a tail of the output, and which run
-directory the launch produced.
+one started from a terminal are indistinguishable in their trace.
 
-A *pipeline* is the CLI's own sequence (collect, freeze, evaluate, replay,
-report, verify) run one command at a time against the run ``collect``
-created, stopping at the first refusal - the same order ``demo`` uses.
+**A launch outlives the console.** The child is started in its own session,
+writes its output to a log file rather than a pipe, and its launch record is a
+file - so closing, crashing or restarting the console neither stops the run
+(a pipe would: the child's next ``print`` after the reader died is a
+``BrokenPipeError``) nor forgets it. A restarted console reads the records
+back, re-attaches to children still running and marks the rest
+``interrupted``. Launch bookkeeping lives under ``<output root>/.console/``.
+
+A *pipeline* is ``pheasant-lab run``: one supervisor child that drives
+collect, freeze, evaluate, replay, report and verify, resuming any stage that
+crashes (:mod:`pheasant_lab.supervisor`). ``resume`` is the same supervisor
+pointed at an existing run; it skips every stage the run's checkpoint records
+as completed.
 """
 
 from __future__ import annotations
 
+import contextlib
+import json
 import os
 import signal
 import subprocess
@@ -27,13 +36,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..lifecycle import durable_write_text
 from .projection import list_runs
 
 #: The CLI commands a launch may run. Anything else is refused: the console
 #: binds loopback by default, and still has no business running arbitrary argv.
 SINGLE_COMMANDS = {"collect", "audit", "freeze-benchmark", "evaluate", "replay", "verify", "report"}
-PIPELINE = ("freeze-benchmark", "evaluate", "replay", "report", "verify")
 REFUSED_EXIT = 2
+CRASHED_EXIT = 3
+TAIL_LINES = 60
 
 
 @dataclass
@@ -48,11 +59,15 @@ class Launch:
     exit_code: int | None = None
     step: str | None = None
     finished_at: float | None = None
+    pid: int | None = None
+    log: str | None = None
     output: deque = field(default_factory=lambda: deque(maxlen=400))
     process: subprocess.Popen | None = None
     stop_requested: bool = False
 
-    def as_dict(self) -> dict[str, Any]:
+    def record(self) -> dict[str, Any]:
+        """What is persisted: everything but the live handles."""
+
         return {
             "launch_id": self.launch_id,
             "kind": self.kind,
@@ -64,16 +79,53 @@ class Launch:
             "step": self.step,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
-            "output_tail": list(self.output)[-60:],
+            "pid": self.pid,
+            "log": self.log,
+            "stop_requested": self.stop_requested,
         }
+
+    def as_dict(self) -> dict[str, Any]:
+        row = self.record()
+        row["output_tail"] = list(self.output)[-TAIL_LINES:]
+        return row
+
+
+def _alive(pid: int | None) -> bool:
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def status_for(code: int, *, stopped: bool) -> str:
+    # The CLI's exit 1 is "the run completed and a decision failed" (a gate,
+    # the non-inferiority test) - not a crash, and the console must not call
+    # it one. Only 2 is a refusal before work, and 3 a crash the supervisor
+    # gave up resuming - which leaves the run resumable, not lost.
+    if stopped:
+        return "stopped"
+    return {
+        0: "succeeded",
+        1: "completed_with_findings",
+        REFUSED_EXIT: "refused",
+        CRASHED_EXIT: "crashed_resumable",
+        130: "stopped",
+    }.get(code, "failed")
 
 
 class Launcher:
     def __init__(self, project_root: Path, output_root: Path) -> None:
         self.project_root = project_root
         self.output_root = output_root
+        self.home = output_root / ".console" / "launches"
         self._launches: dict[str, Launch] = {}
         self._lock = threading.Lock()
+        self._restore()
 
     # -- public ------------------------------------------------------------
     def launch(
@@ -101,10 +153,16 @@ class Launcher:
                 argv += ["--topic", topic]
             if arms:
                 argv += ["--arms", arms]
-        elif kind == "pipeline":
-            argv = ["collect", *common]
-            if topic:
+        elif kind in ("pipeline", "resume"):
+            argv = ["run", *common]
+            if kind == "resume":
+                if not run_id:
+                    raise ValueError("resume needs a run")
+                argv += ["--resume", run_id]
+            elif topic:
                 argv += ["--topic", topic]
+            if arms:
+                argv += ["--arms", arms]
             if max_cost_usd is not None:
                 argv += ["--max-cost-usd", str(max_cost_usd)]
         elif kind in SINGLE_COMMANDS:
@@ -119,37 +177,42 @@ class Launcher:
                 argv += ["--arms", arms]
         else:
             raise ValueError(f"unknown launch kind {kind!r}")
+        if run_id and any(
+            launch.run_id == run_id and launch.status == "running" for launch in self._all()
+        ):
+            raise ValueError(f"{run_id} already has a running launch; stop it first")
 
+        launch_id = f"launch-{uuid.uuid4().hex[:10]}"
         launch = Launch(
-            launch_id=f"launch-{uuid.uuid4().hex[:10]}",
+            launch_id=launch_id,
             kind=kind,
             argv=argv,
             started_at=time.time(),
             config=str(config_path.relative_to(self.project_root)),
             run_id=run_id,
+            step=argv[0],
+            log=str(self.home / f"{launch_id}.log"),
         )
         with self._lock:
             self._launches[launch.launch_id] = launch
-        threading.Thread(
-            target=self._drive,
-            args=(launch, common, arms),
-            name=f"console-{launch.launch_id}",
-            daemon=True,
-        ).start()
+        self._start(launch)
         return launch
 
     def stop(self, launch_id: str) -> Launch:
         launch = self.get(launch_id)
         launch.stop_requested = True
-        process = launch.process
-        if process is not None and process.poll() is None:
-            # SIGINT first: the CLI turns it into a clean "interrupted" with
-            # its trace flushed, which a SIGKILL would not give it.
-            process.send_signal(signal.SIGINT)
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.terminate()
+        self._save(launch)
+        if launch.status == "running" and _alive(launch.pid):
+            # SIGINT first, to the whole group: the supervisor and the stage it
+            # is running both turn it into a clean "interrupted" with their
+            # traces flushed, which a SIGKILL would not give them.
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(launch.pid, signal.SIGINT)  # type: ignore[arg-type]
+            if launch.process is not None:
+                try:
+                    launch.process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    launch.process.terminate()
         return launch
 
     def get(self, launch_id: str) -> Launch:
@@ -157,12 +220,21 @@ class Launcher:
             launch = self._launches.get(launch_id)
         if launch is None:
             raise KeyError(launch_id)
+        self._tail(launch)
         return launch
 
     def list(self) -> list[dict[str, Any]]:
-        with self._lock:
-            launches = list(self._launches.values())
+        launches = self._all()
+        for launch in launches:
+            self._tail(launch)
         return [launch.as_dict() for launch in sorted(launches, key=lambda row: -row.started_at)]
+
+    def live_runs(self) -> set[str]:
+        return {
+            launch.run_id
+            for launch in self._all()
+            if launch.run_id and launch.status == "running" and _alive(launch.pid)
+        }
 
     def run_command(self, argv: list[str], *, timeout: float = 120.0) -> tuple[int, str]:
         """Run a short, read-only command (plan, doctor) and capture its output."""
@@ -181,6 +253,10 @@ class Launcher:
         return self._config_path(config)
 
     # -- internals ---------------------------------------------------------
+    def _all(self) -> list[Launch]:
+        with self._lock:
+            return list(self._launches.values())
+
     def _config_path(self, config: str) -> Path:
         path = (self.project_root / config).resolve()
         if not path.is_file() or self.project_root.resolve() not in path.parents:
@@ -195,71 +271,152 @@ class Launcher:
         env["PYTHONUNBUFFERED"] = "1"
         return env
 
-    def _drive(self, launch: Launch, common: list[str], arms: str | None) -> None:
+    def _save(self, launch: Launch) -> None:
+        durable_write_text(
+            self.home / f"{launch.launch_id}.json",
+            json.dumps(launch.record(), indent=2, sort_keys=True) + "\n",
+        )
+
+    def _start(self, launch: Launch) -> None:
+        self.home.mkdir(parents=True, exist_ok=True)
         before = {row["run_id"] for row in list_runs(self.output_root)}
-        code = self._step(launch, launch.argv)
+        log = Path(str(launch.log))
+        with log.open("a", encoding="utf-8") as handle:
+            handle.write(f"$ pheasant-lab {' '.join(launch.argv)}\n")
+            handle.flush()
+            # Its own session, and a file rather than a pipe: neither the
+            # console's Ctrl-C nor the console's death reaches the run.
+            process = subprocess.Popen(
+                self._python(launch.argv),
+                cwd=self.project_root,
+                stdout=handle,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                env=self._env(),
+                start_new_session=True,
+            )
+        launch.process = process
+        launch.pid = process.pid
+        self._save(launch)
+        threading.Thread(
+            target=self._watch,
+            args=(launch, before),
+            name=f"console-{launch.launch_id}",
+            daemon=True,
+        ).start()
+
+    def _watch(self, launch: Launch, before: set[str]) -> None:
+        """Surface the run as soon as its directory exists, then wait for the end.
+
+        Watched apart from the output: a command can be silent for the whole
+        of a barrier wait, which is exactly when someone wants to watch it.
+        """
+
+        process = launch.process
+        while process is not None and process.poll() is None:
+            if launch.run_id is None:
+                launch.run_id = self._new_run(before)
+                if launch.run_id:
+                    self._save(launch)
+            time.sleep(0.25)
         if launch.run_id is None:
             launch.run_id = self._new_run(before)
-        if launch.kind == "pipeline" and code in (0, 1) and launch.run_id:
-            for command in PIPELINE:
-                if launch.stop_requested:
-                    break
-                argv = [command, *common, "--run", launch.run_id]
-                if command == "evaluate" and arms:
-                    argv += ["--arms", arms]
-                step = self._step(launch, argv)
-                code = code or step
-                if step == REFUSED_EXIT:
-                    break
+        code = process.wait() if process is not None else -1
         launch.exit_code = code
         launch.finished_at = time.time()
-        # The CLI's exit 1 is "the run completed and a decision failed" (a
-        # gate, the non-inferiority test) - not a crash, and the console
-        # must not call it one. Only 2 is a refusal before work.
-        launch.status = (
-            "stopped"
-            if launch.stop_requested
-            else "succeeded"
-            if code == 0
-            else "refused"
-            if code == REFUSED_EXIT
-            else "completed_with_findings"
-            if code == 1
-            else "failed"
-        )
+        launch.status = status_for(code, stopped=launch.stop_requested)
+        self._tail(launch)
+        self._save(launch)
 
-    def _step(self, launch: Launch, argv: list[str]) -> int:
-        launch.step = argv[0]
-        launch.output.append(f"$ pheasant-lab {' '.join(argv)}")
-        before = {row["run_id"] for row in list_runs(self.output_root)}
-        process = subprocess.Popen(
-            self._python(argv),
-            cwd=self.project_root,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            env=self._env(),
-        )
-        launch.process = process
-        if launch.run_id is None:
-            # Surface the run as soon as its directory exists, so the live
-            # view can attach while collection is still going. Watched apart
-            # from the output: a command can be silent for the whole of a
-            # barrier wait, which is exactly when someone wants to watch it.
-            threading.Thread(
-                target=self._find_run, args=(launch, process, before), daemon=True
-            ).start()
-        assert process.stdout is not None
-        for line in process.stdout:
-            launch.output.append(line.rstrip("\n"))
-        return process.wait()
+    def _follow(self, launch: Launch) -> None:
+        """A child a previous console started: poll it, since it is not ours to wait on."""
 
-    def _find_run(self, launch: Launch, process: subprocess.Popen, before: set[str]) -> None:
-        while launch.run_id is None:
-            launch.run_id = self._new_run(before)
-            if launch.run_id or process.poll() is not None:
-                break
-            time.sleep(0.25)
+        while _alive(launch.pid):
+            time.sleep(1.0)
+        launch.finished_at = launch.finished_at or time.time()
+        if launch.status == "running":
+            # Not our child, so no exit status reaches us - but a supervised
+            # run wrote every stage's exit to its attempts log.
+            launch.status = "stopped" if launch.stop_requested else self._outcome(launch)
+        self._tail(launch)
+        self._save(launch)
+
+    def _outcome(self, launch: Launch) -> str:
+        if not launch.run_id:
+            return "ended"
+        log = self.output_root / launch.run_id / "supervisor" / "attempts.jsonl"
+        try:
+            last = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+        except (OSError, ValueError, IndexError):
+            return "ended"
+        code = int(last.get("exit_code") or 0)
+        launch.exit_code = code
+        if last.get("outcome") == "crashed":
+            return "crashed_resumable"
+        if last.get("stage") == "verify" or code in (REFUSED_EXIT, 130):
+            return status_for(code, stopped=False)
+        return "ended"
+
+    def _restore(self) -> None:
+        if not self.home.is_dir():
+            return
+        for path in sorted(self.home.glob("launch-*.json")):
+            try:
+                row = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            launch = Launch(
+                launch_id=str(row["launch_id"]),
+                kind=str(row.get("kind") or ""),
+                argv=list(row.get("argv") or []),
+                started_at=float(row.get("started_at") or 0.0),
+                config=str(row.get("config") or ""),
+                run_id=row.get("run_id"),
+                status=str(row.get("status") or "ended"),
+                exit_code=row.get("exit_code"),
+                step=row.get("step"),
+                finished_at=row.get("finished_at"),
+                pid=row.get("pid"),
+                log=row.get("log"),
+                stop_requested=bool(row.get("stop_requested")),
+            )
+            if launch.status == "running":
+                if _alive(launch.pid):
+                    threading.Thread(target=self._follow, args=(launch,), daemon=True).start()
+                else:
+                    # The console went down and so did its child, or the
+                    # machine restarted under both. The run is on disk and
+                    # `resume` picks it up where its checkpoint says.
+                    launch.status = "interrupted"
+                    launch.finished_at = launch.finished_at or time.time()
+                    self._save(launch)
+            self._tail(launch)
+            self._launches[launch.launch_id] = launch
+
+    def _tail(self, launch: Launch) -> None:
+        if not launch.log:
+            return
+        path = Path(launch.log)
+        if not path.is_file():
+            return
+        try:
+            with path.open("rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                size = handle.tell()
+                handle.seek(max(0, size - 64 * 1024))
+                text = handle.read().decode("utf-8", errors="replace")
+        except OSError:
+            return
+        lines = text.splitlines()
+        if size > 64 * 1024:
+            lines = lines[1:]
+        launch.output = deque(lines[-400:], maxlen=400)
+        if launch.status == "running" and launch.kind in ("pipeline", "resume"):
+            for line in reversed(lines):
+                if line.startswith("$ pheasant-lab "):
+                    launch.step = line.split()[2]
+                    break
 
     def _new_run(self, before: set[str]) -> str | None:
         fresh = [row for row in list_runs(self.output_root) if row["run_id"] not in before]

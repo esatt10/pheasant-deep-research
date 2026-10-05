@@ -51,6 +51,9 @@ LOG = logging.getLogger("pheasant_lab")
 EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_REFUSED = 2
+#: An unhandled exception. Kept apart from ``1`` - "completed, and a decision
+#: failed" - because a supervisor resumes a crash and must not resume a result.
+EXIT_CRASHED = 3
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +147,7 @@ def open_session(
     )
     ledger = CostLedger.from_config(config, budget_override=getattr(args, "max_cost_usd", None))
     state = RunState.load(paths.state)
+    state.barrier = tracer.sync
     state.update(run_id=run_id, config_digest=config_digest, started_at=manifest["created_at"])
 
     session = Session(
@@ -220,6 +224,11 @@ def resume_session(
         dry_run=bool(getattr(args, "dry_run", False)),
     )
     if not read_only:
+        session.state.barrier = tracer.sync
+        for repaired in tracer.repairs:
+            # The previous process died mid-append. The fragment is kept in
+            # integrity/torn/ and the cut is part of the trace, not a secret.
+            tracer.emit("run.repaired", status="partial", payload=repaired)
         tracer.emit("run.resumed", payload={"command": " ".join(sys.argv[1:])})
     if connect and not session.dry_run:
         _connect(session, args)
@@ -275,8 +284,19 @@ def _connect(session: Session, args: argparse.Namespace) -> None:
     capabilities = resolve(config.pheasant, session_info.tools)
     session.client = client
     session.capabilities = capabilities
+    from .pheasant.receipts import ReceiptLedger
+
     session.ingestor = Ingestor(
-        client, capabilities, config.pheasant, run_id=session.run_id, tracer=session.tracer
+        client,
+        capabilities,
+        config.pheasant,
+        run_id=session.run_id,
+        tracer=session.tracer,
+        # A resumed run carries on with the receipts the previous process held.
+        ledger=ReceiptLedger.restore(
+            read_jsonl(session.paths.raw_file("ingest-receipts.jsonl")),
+            read_jsonl(session.paths.raw_file("ingest-requests.jsonl")),
+        ),
     )
     session.retriever = Retriever(
         client, capabilities, config.pheasant, store_text=config.privacy.store_response_text
@@ -313,10 +333,37 @@ def _providers(config: LabConfig, *, offline: bool, failures: list[str] | None =
     return built
 
 
-def _model(config: LabConfig, role: str) -> Any:
+#: The error-ledger stage a role's model calls belong to.
+_ROLE_STAGE = {
+    "planner": "discovery",
+    "orchestrator": "discovery",
+    "auditor": "discovery",
+    "researcher": "extraction",
+    "benchmark_builder": "evaluation",
+}
+
+
+def _model(config: LabConfig, role: str, tracer: Tracer | None = None) -> Any:
+    from .models.retry import RetryingProvider
+
     spec = config.role(role)
     key_env = {"openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY"}.get(spec.provider)
-    return build_model(spec, role=role, api_key=os.environ.get(key_env) if key_env else None)
+    inner = build_model(spec, role=role, api_key=os.environ.get(key_env) if key_env else None)
+
+    def record(exc: BaseException, attempt: int, wait: float) -> None:
+        if tracer is not None:
+            tracer.errors.record(
+                exc,
+                stage=_ROLE_STAGE.get(role, "answer"),
+                component=f"models.{spec.provider}",
+                operation=f"{role}.complete",
+                attempt=attempt,
+                retryable=True,
+                resolution="retried",
+                backoff_seconds=wait,
+            )
+
+    return RetryingProvider(inner, on_retry=record)
 
 
 # ---------------------------------------------------------------------------
@@ -526,17 +573,42 @@ def cmd_plan(args: argparse.Namespace) -> int:
 
 def cmd_collect(args: argparse.Namespace) -> int:
     from .orchestration.orchestrator import Orchestrator
+    from .orchestration.state import rehydrate
 
     session = open_session(args)
     try:
         config = session.config
-        topic = config.topic(args.topic) if getattr(args, "topic", None) else config.topics[0]
+        progress = session.state.get("collect_progress") if getattr(args, "run", None) else None
+        if getattr(args, "topic", None):
+            topic = config.topic(args.topic)
+        elif progress:
+            topic = config.topic(str(progress["topic_id"]))
+        else:
+            topic = config.topics[0]
         if session.dry_run:
             print(f"dry run: would collect topic {topic.id} into {session.paths.root}")
             return EXIT_OK
         if session.state.completed("collect") and not getattr(args, "force", False):
             print(f"collect already completed for {session.run_id}; pass --force to redo it")
             return EXIT_OK
+        if progress and progress.get("topic_id") != topic.id:
+            progress = None
+        # Resuming an interrupted collection: the registry and the evidence
+        # ledger come back from the raw trace, not from the checkpoint, and the
+        # loop continues from the last round boundary that was made durable.
+        prior = (
+            rehydrate(
+                session.run_id,
+                topic.id,
+                read_jsonl(session.paths.raw_file("sources.jsonl")),
+                read_jsonl(session.paths.raw_file("claims.jsonl")),
+                contradiction_rows=read_jsonl(session.paths.raw_file("contradictions.jsonl")),
+            )
+            if getattr(args, "run", None)
+            else None
+        )
+        if prior is not None and not progress and not prior.sources:
+            prior = None
 
         offline = bool(getattr(args, "offline", False)) or session.mock is not None
         orchestrator = Orchestrator(
@@ -545,12 +617,18 @@ def cmd_collect(args: argparse.Namespace) -> int:
             tracer=session.tracer,
             ledger=session.ledger,
             providers=_providers(config, offline=offline),
-            planner_model=_model(config, "planner"),
-            researcher_model=_model(config, "researcher"),
-            auditor_model=_model(config, "auditor"),
+            planner_model=_model(config, "planner", session.tracer),
+            researcher_model=_model(config, "researcher", session.tracer),
+            auditor_model=_model(config, "auditor", session.tracer),
             ingestor=session.ingestor,
         )
-        result = orchestrator.collect(topic)
+        session.state.mark_stage("collect", "running")
+        result = orchestrator.collect(
+            topic,
+            resume=progress or None,
+            prior=prior,
+            checkpoint=lambda record: session.state.set("collect_progress", record),
+        )
 
         if session.ingestor is not None:
             session.ingestor.sync()
@@ -627,7 +705,7 @@ def cmd_freeze_benchmark(args: argparse.Namespace) -> int:
         state = _rehydrated(session, topic.id, rehydrate)
         builder = BenchmarkBuilder(
             config,
-            model=_model(config, "benchmark_builder"),
+            model=_model(config, "benchmark_builder", session.tracer),
             ledger=session.ledger,
             tracer=session.tracer,
             run_id=session.run_id,
@@ -739,7 +817,7 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
                 run_id=session.run_id,
                 tracer=session.tracer,
                 ledger=session.ledger,
-                model=_model(config, role),
+                model=_model(config, role, session.tracer),
                 retriever=session.retriever if arm_id in {"P0", "P1", "P2"} else None,
                 # Only the arm that writes nothing is pinned to the sealed
                 # snapshot. A pinned search is answered from that state *or
@@ -803,6 +881,15 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
                 if r.get("artifact_id") and str(r.get("idempotency_key")) in paths
             }
 
+        # An evaluation a crash interrupted resumes from the answers it had
+        # already recorded. Only possible when answers were stored whole: with
+        # response text withheld a recorded answer cannot be re-scored.
+        recorded: list[dict[str, Any]] = []
+        if (
+            session.state.stage_status("evaluate") == "running"
+            and config.privacy.store_response_text
+        ):
+            recorded = list(read_jsonl(session.paths.raw_file("answers.jsonl")))
         engine = EvaluationEngine(
             config,
             run_id=session.run_id,
@@ -822,8 +909,15 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
             reconcile=dict(session.state.get("reconcile") or {}),
             receipt_rate=(accepted, submitted),
             limitations=limitations,
+            recorded_answers=recorded,
         )
+        session.state.mark_stage("evaluate", "running")
         result = engine.run()
+        if engine.reused:
+            session.tracer.emit(
+                "evaluation.resumed",
+                payload={"answers_reused": engine.reused, "answers_total": len(result.answers)},
+            )
         session.state.update(budget=session.ledger.snapshot())
         session.state.mark_stage("evaluate", "completed", answers=len(result.answers))
         write_checksums(session.paths)
@@ -1214,6 +1308,80 @@ def cmd_demo(args: argparse.Namespace) -> int:
     return code
 
 
+def cmd_draft_topic(args: argparse.Namespace) -> int:
+    """Draft a research topic from a stated intent. Writes nothing."""
+
+    import yaml
+
+    from .orchestration.drafter import draft_topic
+
+    config = _resolve_config(args)
+    seeds = [t for t in (args.seed_terms or "").split(",") if t.strip()]
+    try:
+        draft = draft_topic(
+            config,
+            _model(config, "planner"),
+            intent=args.intent,
+            seed_terms=seeds,
+            max_cost_usd=args.max_cost_usd,
+        )
+    except (RuntimeError, ValueError) as exc:
+        # A missing key, an unpriced model, an intent too thin to read: each
+        # is an answer for the person, not a crash.
+        print(f"refused: {exc}", file=sys.stderr)
+        return EXIT_REFUSED
+    payload = draft.as_dict()
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        topic = {k: v for k, v in payload.items() if k not in {"notes", "drafted_by"}}
+        topic["facets"] = [{k: f[k] for k in ("id", "label", "weight")} for f in topic["facets"]]
+        print(yaml.safe_dump({"topics": [topic]}, sort_keys=False, allow_unicode=True))
+        print(f"# {payload['notes']}")
+        by = payload["drafted_by"]
+        print(f"# drafted by {by['provider']}:{by['model']} for ${by['cost_usd']:.4f}")
+    return EXIT_OK
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    """The whole pipeline, resuming any stage that crashes. See ``supervisor``."""
+
+    from .supervisor import RunLocked, supervise
+
+    config = _resolve_config(args)
+    project_root = Path(getattr(args, "project_root", None) or Path.cwd()).resolve()
+    output_root = Path(config.experiment.output_root)
+    if not output_root.is_absolute():
+        output_root = project_root / output_root
+    common = ["--config", str(args.config)]
+    for item in getattr(args, "set", None) or []:
+        common += ["--set", item]
+    if getattr(args, "env_file", None):
+        common += ["--env-file", str(args.env_file)]
+    if getattr(args, "project_root", None):
+        common += ["--project-root", str(args.project_root)]
+    for flag in ("mock", "offline"):
+        if getattr(args, flag, False):
+            common.append(f"--{flag}")
+    try:
+        code, run_id = supervise(
+            common,
+            output_root=output_root,
+            run_id=getattr(args, "run", None),
+            topic=getattr(args, "topic", None),
+            arms=getattr(args, "arms", None),
+            max_cost_usd=getattr(args, "max_cost_usd", None),
+            attempts=max(1, int(args.attempts)),
+            cwd=project_root,
+        )
+    except RunLocked as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return EXIT_REFUSED
+    if run_id:
+        print(f"\nrun: {run_id}")
+    return code
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     """The console: configure, launch and watch runs from a browser.
 
@@ -1353,6 +1521,31 @@ def build_parser() -> argparse.ArgumentParser:
     demo.add_argument("--output-root", default=None)
     demo.set_defaults(func=cmd_demo)
 
+    draft = subparsers.add_parser(
+        "draft-topic", help="draft a research topic (title, seed terms, facets) from an intent"
+    )
+    common(draft, mutating=False)
+    draft.add_argument("--intent", required=True, help="what you want to find out, in your words")
+    draft.add_argument("--seed-terms", default=None, help="comma-separated terms you already have")
+    draft.add_argument(
+        "--max-cost-usd", type=float, default=0.25, help="cap for this one model call"
+    )
+    draft.add_argument("--json", action="store_true")
+    draft.set_defaults(func=cmd_draft_topic)
+
+    run_cmd = subparsers.add_parser(
+        "run",
+        help="collect → freeze → evaluate → replay → report → verify, resuming crashed stages",
+    )
+    common(run_cmd)
+    run_cmd.add_argument("--topic", default=None)
+    run_cmd.add_argument("--arms", default=None)
+    run_cmd.add_argument(
+        "--attempts", type=int, default=3, help="attempts per stage before stopping resumable"
+    )
+    run_cmd.add_argument("--output-root", default=None)
+    run_cmd.set_defaults(func=cmd_run)
+
     serve_cmd = subparsers.add_parser(
         "serve", help="the console: configure, launch and watch runs in a browser"
     )
@@ -1392,6 +1585,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     except KeyboardInterrupt:  # pragma: no cover - interactive
         print("interrupted", file=sys.stderr)
         return 130
+    except Exception:
+        # Without this an unhandled exception exits 1, which this CLI already
+        # uses for "completed, and a decision failed" - so a supervisor could
+        # not tell a crash it should resume from a result it must not.
+        import traceback
+
+        traceback.print_exc()
+        print("crashed: the run is resumable with --resume/--run", file=sys.stderr)
+        return EXIT_CRASHED
     LOG.debug("%s finished in %.1fs", args.command, time.monotonic() - started)
     return code
 

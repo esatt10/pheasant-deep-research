@@ -5,11 +5,23 @@ stop decision that can only say ``sufficient`` when every hard condition
 passes. The orchestrator owns three things nothing else may decide: how much
 budget a round may commit, whether the evaluation reserve is still intact, and
 what the run is allowed to call the result.
+
+Collection is checkpointed at round boundaries. After the plan and after every
+round the orchestrator hands its caller a *progress* record - the round just
+finished, the subtopics the next round will run, the decision once there is
+one - and the caller makes it durable. A process that dies mid-collection is
+resumed from the last boundary over state rehydrated from the raw trace, so a
+crash costs at most the round in flight, never the rounds before it. The
+round in flight is simply run again: what it had already admitted is in the
+rehydrated registry and is not admitted twice, claims are content-addressed
+and fold, and a re-submitted document carries the same idempotency key, so the
+region folds it rather than indexing it twice.
 """
 
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any
@@ -79,8 +91,23 @@ class Orchestrator:
         self.started_at = started_at if started_at is not None else time.monotonic()
 
     # -- the loop ----------------------------------------------------------
-    def collect(self, topic: Topic) -> CollectionResult:
-        state = CollectionState(self.run_id, topic.id)
+    def collect(
+        self,
+        topic: Topic,
+        *,
+        resume: dict[str, Any] | None = None,
+        prior: CollectionState | None = None,
+        checkpoint: Callable[[dict[str, Any]], None] | None = None,
+    ) -> CollectionResult:
+        """Collect for one topic, or continue a collection a crash interrupted.
+
+        ``resume`` is the last progress record ``checkpoint`` was handed and
+        ``prior`` the state rehydrated from the raw trace. Without them this
+        is a fresh collection.
+        """
+
+        state = prior if prior is not None else CollectionState(self.run_id, topic.id)
+        save = checkpoint or (lambda _progress: None)
         planner = Planner(self.config, self.planner_model, self.ledger, tracer=self.tracer)
         auditor = CoverageAuditor(
             self.config, topic, model=self.auditor_model, ledger=self.ledger, tracer=self.tracer
@@ -96,13 +123,62 @@ class Orchestrator:
         audit = auditor.audit(state)
         decision = StopDecision(outcome="continue", reason="collection has not started")
         ordinal = 0
+        first_round = 1
+        finished = False
+
+        if resume is not None:
+            subtopics = [Subtopic.from_dict(row) for row in resume.get("subtopics") or []]
+            branches = list(resume.get("branches") or [])
+            ordinal = int(resume.get("ordinal") or 0)
+            first_round = int(resume.get("round") or 0) + 1
+            state.rounds = [
+                RoundRecord(
+                    number=int(row.get("round") or 0),
+                    subtopics=[str(x) for x in row.get("subtopics") or []],
+                    new_eligible_claims=int(row.get("new_eligible_claims") or 0),
+                    eligible_claims_before=int(row.get("eligible_claims_before") or 0),
+                    acquired=int(row.get("acquired") or 0),
+                    duplicates=int(row.get("duplicates") or 0),
+                    cost_usd=float(row.get("cost_usd") or 0.0),
+                )
+                for row in resume.get("rounds") or []
+            ]
+            if resume.get("decision"):
+                decision = StopDecision.from_dict(resume["decision"])
+            finished = bool(resume.get("finished"))
+            self.tracer.emit(
+                "collection.resumed",
+                payload={
+                    "from_round": first_round,
+                    "finished": finished,
+                    "sources_rehydrated": len(state.sources),
+                    "claims_rehydrated": len(state.claims),
+                },
+                topic_id=topic.id,
+            )
+
+        def progress(round_done: int, *, done: bool = False) -> dict[str, Any]:
+            return {
+                "topic_id": topic.id,
+                "round": round_done,
+                "ordinal": ordinal,
+                "subtopics": [s.as_dict() for s in subtopics],
+                "branches": list(branches),
+                "rounds": [r.as_dict() for r in state.rounds],
+                "decision": decision.as_dict() if decision.outcome != "continue" else None,
+                "finished": done,
+            }
 
         with self.tracer.span("collection", topic_id=topic.id, stage="discovery"):
-            subtopics = planner.plan(
-                topic, max_subtopics=self.config.collection.max_research_agents, run_id=self.run_id
-            )
-            for round_number in range(1, self.config.collection.max_depth + 1):
-                if not subtopics:
+            if resume is None:
+                subtopics = planner.plan(
+                    topic,
+                    max_subtopics=self.config.collection.max_research_agents,
+                    run_id=self.run_id,
+                )
+                save(progress(0))
+            for round_number in range(first_round, self.config.collection.max_depth + 1):
+                if finished or not subtopics:
                     break
                 before = len(state.eligible_claims())
                 acquired_before = len(state.sources)
@@ -145,6 +221,7 @@ class Orchestrator:
                     topic_id=topic.id,
                 )
                 if decision.outcome != "continue":
+                    save(progress(round_number, done=True))
                     break
 
                 widened = planner.replan(
@@ -155,6 +232,15 @@ class Orchestrator:
                     run_id=self.run_id,
                 )
                 subtopics = widened or subtopics
+                save(progress(round_number))
+            else:
+                if not finished:
+                    save(progress(self.config.collection.max_depth, done=True))
+            if finished or resume is not None:
+                # A resumed collection audits what it holds now, so the result
+                # describes the corpus rather than the round the crash hit.
+                assigned = {facet for subtopic in subtopics for facet in subtopic.facet_ids}
+                audit = auditor.audit(state, assigned_facets=assigned)
 
         result = CollectionResult(
             topic_id=topic.id,

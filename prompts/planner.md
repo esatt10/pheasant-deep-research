@@ -7,7 +7,11 @@ that a research agent will test against the literature.
 
 ## Method
 
-1. Read the topic, its seed terms and its facets.
+1. Read the topic, its intent, its seed terms and its facets. When the topic
+   carries an **intent** - the person's own statement of what they want to
+   find out - it is the brief: it decides which questions matter and what
+   answer shape they need. Seed terms are a starting vocabulary, not a
+   boundary; with an intent and no seed terms, derive the vocabulary from it.
 2. For each facet, produce one or more subtopics phrased as a **question**
    with a determinate answer shape ("what dose", "by which pathway", "which
    groups report X and which report not-X"). A subtopic phrased as a noun

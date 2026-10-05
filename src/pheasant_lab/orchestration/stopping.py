@@ -79,6 +79,32 @@ class StopDecision:
     def sufficient(self) -> bool:
         return self.outcome == "sufficient"
 
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> StopDecision:
+        """The decision a checkpoint recorded, exactly - not re-derived.
+
+        Re-deriving it on resume would re-read the clock, and a run stopped
+        for time would come back with a different reason than it stopped for.
+        """
+
+        return cls(
+            outcome=payload["outcome"],
+            conditions=[
+                Condition(
+                    id=str(row["id"]),
+                    met=bool(row["met"]),
+                    detail=str(row.get("detail") or ""),
+                    numerator=row.get("numerator"),
+                    denominator=row.get("denominator"),
+                    threshold=row.get("threshold"),
+                )
+                for row in payload.get("conditions") or []
+            ],
+            reason=str(payload.get("reason") or ""),
+            facet_coverage=payload.get("facet_coverage"),
+            marginal_yield=[float(v) for v in payload.get("marginal_yield") or []],
+        )
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "outcome": self.outcome,

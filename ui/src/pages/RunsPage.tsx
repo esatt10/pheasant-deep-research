@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api";
 import { usePoll } from "../hooks/usePoll";
@@ -13,6 +14,9 @@ const LAUNCH_TONE: Record<Launch["status"], string> = {
   failed: "pill pill--danger",
   refused: "pill pill--danger",
   stopped: "pill",
+  crashed_resumable: "pill pill--warn",
+  interrupted: "pill pill--warn",
+  ended: "pill",
 };
 
 export function RunsPage() {
@@ -21,6 +25,26 @@ export function RunsPage() {
   const launches = usePoll<Launch[]>(api.launches, (data) =>
     data?.some((l) => l.status === "running") ? 1000 : 4000,
   );
+  const [resuming, setResuming] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Resume = `pheasant-lab run --resume <run>` under the run's own config and
+  // overrides: it skips every stage the checkpoint records as completed and
+  // continues the one a crash interrupted from its last durable boundary.
+  const resume = async (run: RunRow) => {
+    if (!run.config) return;
+    setResuming(run.run_id);
+    setError(null);
+    try {
+      await api.launch({ kind: "resume", config: run.config, set: run.overrides, run_id: run.run_id });
+      void launches.refresh();
+      void runs.refresh();
+    } catch (caught) {
+      setError((caught as Error).message);
+    } finally {
+      setResuming(null);
+    }
+  };
 
   return (
     <div className="page">
@@ -32,10 +56,13 @@ export function RunsPage() {
         </Link>
       </div>
 
+      {error ? <div className="pill pill--danger" style={{ whiteSpace: "normal" }}>{error}</div> : null}
+
       {launches.data && launches.data.length > 0 ? (
         <div className="card">
           <div className="card__head">
-            Launched from this console <span className="sub">child processes of `pheasant-lab serve`</span>
+            Launched from this console{" "}
+            <span className="sub">detached processes — they keep running if the console stops, and it re-attaches on restart</span>
           </div>
           <table className="table">
             <tbody>
@@ -109,8 +136,30 @@ export function RunsPage() {
                   </span>
                 </td>
                 <td>{run.mock ? <span className="pill">mock</span> : <span className="pill pill--info">live</span>}</td>
-                <td className="muted">{ago(run.updated_at)}</td>
-                <td style={{ textAlign: "right" }}>
+                <td className="muted">
+                  {ago(run.updated_at)}
+                  {run.live ? (
+                    <div><span className="pill pill--info"><span className="spinner" /> running</span></div>
+                  ) : run.interrupted ? (
+                    <div title="A stage was running when its process stopped. Its checkpoint is on disk.">
+                      <span className="pill pill--warn">interrupted</span>
+                    </div>
+                  ) : null}
+                </td>
+                <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                  {run.resumable && run.config ? (
+                    <button
+                      className="btn btn--small btn--primary"
+                      title={`pheasant-lab run --resume ${run.run_id}`}
+                      disabled={resuming === run.run_id}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void resume(run);
+                      }}
+                    >
+                      {resuming === run.run_id ? <span className="spinner" /> : null} Resume
+                    </button>
+                  ) : null}{" "}
                   <Link className="btn btn--small" to={`/reports/${run.run_id}`} onClick={(e) => e.stopPropagation()}>
                     Reports
                   </Link>

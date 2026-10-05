@@ -7,6 +7,7 @@ import type {
   RunModel,
   RunRow,
   TopicDoc,
+  TopicDraft,
   TopicList,
   Trace,
   TraceActor,
@@ -72,6 +73,8 @@ export const api = {
     request<TopicList>(
       `/topics?config=${encodeURIComponent(config)}${set.map((s) => `&set=${encodeURIComponent(s)}`).join("")}`,
     ),
+  draftTopic: (body: Omit<ConfigRequest, "topic"> & { intent: string; seed_terms?: string[] }) =>
+    post<TopicDraft>("/topics/draft", body),
   addTopic: (body: Omit<ConfigRequest, "topic"> & { topic: TopicDoc; replace?: boolean }) =>
     post<{ topic: TopicDoc; replaced: boolean; topics_file: string; override: string; count: number }>("/topics", body),
   region: (config?: string) =>

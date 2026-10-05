@@ -307,7 +307,11 @@ def _get(url: str) -> tuple[int, dict | str]:
 def test_the_api_lists_and_folds_runs(console: str, fleet_run: Path) -> None:
     status, runs = _get(f"{console}/api/runs")
     assert status == 200 and runs[0]["run_id"] == fleet_run.name
-    assert runs == list_runs(fleet_run.parent)
+    listed = list_runs(fleet_run.parent)
+    assert [
+        {k: v for k, v in row.items() if k not in {"live", "resumable"}} for row in runs
+    ] == listed
+    assert runs[0]["live"] is False and runs[0]["resumable"] is (not listed[0]["complete"])
 
     status, view = _get(f"{console}/api/runs/{fleet_run.name}")
     assert status == 200 and view["run"]["run_id"] == fleet_run.name
@@ -593,6 +597,113 @@ def test_every_console_route_reloads_to_the_app(fleet_run: Path, tmp_path: Path)
                 assert response.status == 200, path
                 assert response.headers["Content-Type"].startswith("text/html"), path
                 assert b"id=root" in response.read(), path
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+# ---------------------------------------------------------------------------
+# a topic from an intent
+# ---------------------------------------------------------------------------
+
+
+INTENT = (
+    "Why do some tardigrade species survive extreme radiation while others do not, "
+    "and which survival claims failed to replicate?"
+)
+
+
+def test_a_draft_is_proposed_from_an_intent_and_writes_nothing(project: Path) -> None:
+    from pheasant_lab.cli import _model
+    from pheasant_lab.orchestration.drafter import draft_topic
+
+    config = load_config(project / "configs" / "demo.yaml", project_root=project)
+    before = sorted(p.name for p in (project / "configs").iterdir())
+    draft = draft_topic(config, _model(config, "planner"), intent=INTENT, seed_terms=["Dsup"])
+    again = draft_topic(config, _model(config, "planner"), intent=INTENT, seed_terms=["Dsup"])
+    payload = draft.as_dict()
+
+    assert payload == again.as_dict(), "the offline draft is not deterministic"
+    assert payload["intent"] == INTENT and payload["seed_terms"][0] == "Dsup"
+    assert any("replicate" in f["label"] for f in payload["facets"])
+    assert payload["drafted_by"]["deterministic"] is True
+    assert sorted(p.name for p in (project / "configs").iterdir()) == before
+    with pytest.raises(ValueError, match="sentence"):
+        draft_topic(config, _model(config, "planner"), intent="dsup")
+
+
+def test_an_intent_alone_is_enough_and_the_planner_reads_it(project: Path) -> None:
+    from pheasant_lab.console.topics import LOCAL_TOPICS, add_topic
+    from pheasant_lab.orchestration.planner import _render
+
+    topic = {**TOPIC, "id": "topic-intent-only", "seed_terms": [], "intent": INTENT}
+    add_topic(project, project / "configs" / "demo.yaml", {}, topic)
+    resolved = load_config(
+        project / "configs" / "demo.yaml",
+        overrides={"experiment.topics_file": LOCAL_TOPICS},
+        project_root=project,
+    )
+    saved = resolved.topic("topic-intent-only")
+    assert saved.intent == INTENT and saved.seed_terms == []
+    assert INTENT in _render(saved, 3)
+
+    with pytest.raises(ValueError, match="neither seed terms nor an intent"):
+        add_topic(
+            project,
+            project / "configs" / "demo.yaml",
+            {},
+            {**TOPIC, "id": "topic-nothing", "seed_terms": [], "intent": "  "},
+        )
+
+
+def test_a_topic_without_an_intent_keeps_its_digest() -> None:
+    """`intent` arrived after topics did; a topic that sets none digests as before."""
+
+    config = load_config(REPO_ROOT / "configs" / "demo.yaml", project_root=REPO_ROOT)
+    payload = config.redacted(__import__("pheasant_lab.redaction").redaction.Redactor())
+    assert all("intent" in t for t in payload["topics"])  # present in the model
+    with_intent = config.model_copy(deep=True)
+    with_intent.topics[0].intent = INTENT
+    assert with_intent.digest() != config.digest()
+    # The pinned digest of the shipped demo config, computed before `intent` existed.
+    assert config.digest() == (
+        "sha256:db7e1d01b6d2af85a85d00d91ec3cf1388edff34f146b48e30bf1c471bb02876"
+    )
+
+
+def test_the_draft_route_runs_the_cli_and_refuses_in_words(
+    project: Path, fleet_run: Path, tmp_path: Path
+) -> None:
+    server = serve(
+        host="127.0.0.1",
+        port=0,
+        project_root=REPO_ROOT,
+        output_root=fleet_run.parent,
+        default_config="configs/demo.yaml",
+        ui_dist=tmp_path / "no-ui",
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+
+    def post(body: dict) -> tuple[int, dict]:
+        request = urllib.request.Request(
+            f"{base}/api/topics/draft",
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                return response.status, json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            return error.code, json.loads(error.read())
+
+    try:
+        status, draft = post({"config": "configs/demo.yaml", "intent": INTENT})
+        assert status == 200 and draft["intent"] == INTENT and draft["facets"]
+        status, refused = post({"config": "configs/demo.yaml", "intent": "dsup"})
+        assert status == 400 and "sentence" in refused["detail"]
     finally:
         server.shutdown()
         server.server_close()

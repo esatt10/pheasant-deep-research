@@ -73,6 +73,13 @@ def add_topic(
     """Validate ``payload`` as a topic and write it beside the current ones."""
 
     topic = Topic.model_validate(_clean(payload))
+    # Enforced for topics added here, not at load: a topics file with neither
+    # loaded before intents existed, and must keep loading.
+    if not topic.seed_terms and not topic.intent:
+        raise ValueError(
+            f"topic {topic.id} has neither seed terms nor an intent; the planner would have "
+            "nothing to search from"
+        )
     if not SLUG.match(topic.id):
         raise ValueError(
             f"topic id {topic.id!r} must be lowercase letters, digits and hyphens (2-80)"
@@ -112,13 +119,17 @@ def add_topic(
 
 
 def _dump(topic: Topic) -> dict[str, Any]:
-    return topic.model_dump(mode="json", by_alias=True)
+    row = topic.model_dump(mode="json", by_alias=True)
+    if row.get("intent") is None:
+        row.pop("intent", None)
+    return row
 
 
 def _clean(payload: dict[str, Any]) -> dict[str, Any]:
     """Drop the empty strings a form sends for a field left blank."""
 
     data = dict(payload)
+    data["intent"] = str(data.get("intent") or "").strip() or None
     data["seed_terms"] = [str(t).strip() for t in data.get("seed_terms") or [] if str(t).strip()]
     window = dict(data.get("date_range") or {})
     data["date_range"] = {key: (window.get(key) or None) for key in ("from", "to")}

@@ -28,6 +28,7 @@ ROLE_FILES = {
     "specialist": "specialist-answerer.md",
     "test_agent": "pheasant-answerer.md",
     "control": "pheasant-answerer.md",
+    "topic-drafter": "topic-drafter.md",
 }
 
 

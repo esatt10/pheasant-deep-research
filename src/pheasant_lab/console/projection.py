@@ -905,6 +905,14 @@ def _read_json(path: Path) -> dict[str, Any]:
         return {}
 
 
+def _config_of(manifest: dict[str, Any]) -> str | None:
+    words = str(manifest.get("command") or "").split()
+    for index, word in enumerate(words[:-1]):
+        if word == "--config":
+            return words[index + 1]
+    return None
+
+
 def list_runs(output_root: Path) -> list[dict[str, Any]]:
     """Every run under ``output_root``, newest first, with what a list needs."""
 
@@ -941,6 +949,19 @@ def list_runs(output_root: Path) -> list[dict[str, Any]]:
                 "cost_budget_usd": manifest.get("cost_budget_usd"),
                 "mock": "mock" in str((manifest.get("pheasant") or {}).get("transport", ""))
                 or (root / "mock-region.json").is_file(),
+                # What a resume needs to reproduce the run's own configuration:
+                # the config file it was started from and the overrides it ran
+                # under. A different digest would be refused, correctly.
+                "config": _config_of(manifest),
+                "overrides": [f"{k}={v}" for k, v in (manifest.get("overrides") or {}).items()],
+                "complete": all(
+                    (stages.get(stage) or {}).get("status") == "completed"
+                    for stage in ("collect", "freeze-benchmark", "evaluate")
+                )
+                and (root / "reports" / "summary.md").is_file(),
+                "interrupted": any(
+                    (entry or {}).get("status") == "running" for entry in stages.values()
+                ),
             }
         )
     rows.sort(key=lambda row: row.get("created_at") or "", reverse=True)

@@ -175,7 +175,12 @@ def make_handler(console: Console) -> type[BaseHTTPRequestHandler]:
                     return self._static(url.path)
                 route = parts[1:]
                 if route == ["runs"]:
-                    return self._json(list_runs(console.output_root))
+                    live = console.launcher.live_runs()
+                    rows = list_runs(console.output_root)
+                    for row in rows:
+                        row["live"] = row["run_id"] in live
+                        row["resumable"] = not row["live"] and not row["complete"]
+                    return self._json(rows)
                 if len(route) == 2 and route[0] == "runs":
                     watcher = console.watcher(route[1])
                     if query.get("until"):
@@ -246,6 +251,24 @@ def make_handler(console: Console) -> type[BaseHTTPRequestHandler]:
                         except ValueError:
                             result["projection"] = None
                     return self._json(result)
+                if parts == ["topics", "draft"]:
+                    # The console is a launcher: drafting is the CLI's
+                    # `draft-topic`, so a draft from the browser and one from a
+                    # terminal are the same call under the same budget guard.
+                    argv = ["draft-topic", "--config", config, "--json"]
+                    for item in overrides:
+                        argv += ["--set", item]
+                    argv += ["--intent", str(body.get("intent") or "")]
+                    seeds = [str(t) for t in body.get("seed_terms") or [] if str(t).strip()]
+                    if seeds:
+                        argv += ["--seed-terms", ",".join(seeds)]
+                    code, output = console.launcher.run_command(argv)
+                    if code != 0:
+                        message = output.strip().splitlines()[-1] if output.strip() else "failed"
+                        return self._error(
+                            HTTPStatus.BAD_REQUEST, message.removeprefix("refused: ")
+                        )
+                    return self._json(json.loads(output[output.index("{") :]))
                 if parts == ["topics"]:
                     topic = body.get("topic")
                     if not isinstance(topic, dict):
@@ -378,7 +401,11 @@ def make_handler(console: Console) -> type[BaseHTTPRequestHandler]:
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                # The browser navigated away mid-response. Nothing to report.
+                return
 
         def _send(self, name: str, payload: Any) -> None:
             self._write(f"event: {name}\ndata: {json.dumps(payload, default=str)}\n\n")

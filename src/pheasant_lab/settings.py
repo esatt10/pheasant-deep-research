@@ -663,6 +663,12 @@ class SourceAuthority(_Model):
 class Topic(_Model):
     id: str
     title: str
+    #: What the person wants to find out, in their own words. The planner
+    #: reads it as the brief on every run; seed terms are then a starting
+    #: vocabulary rather than the whole of what the topic says. Optional, and
+    #: left out of the config digest while unset, so topics written before it
+    #: existed keep their runs resumable.
+    intent: str | None = None
     seed_terms: list[str] = Field(default_factory=list)
     date_range: DateRange = Field(default_factory=DateRange)
     facets: list[Facet] = Field(default_factory=list)
@@ -674,6 +680,8 @@ class Topic(_Model):
             raise ValueError(
                 f"topic {self.id} has no facets; FacetCoverage would have no denominator"
             )
+        if self.intent is not None and not self.intent.strip():
+            self.intent = None
         return self
 
 
@@ -757,6 +765,10 @@ class LabConfig(_Model):
             search_map = (payload.get("pheasant") or {}).get("argument_map", {}).get("search")
             if isinstance(search_map, dict):
                 search_map.pop("expand", None)
+        # A topic's intent arrived after topics did; unset, it is left out.
+        for topic in payload.get("topics") or []:
+            if isinstance(topic, dict) and topic.get("intent") is None:
+                topic.pop("intent", None)
         # Observational, not experimental: reading the index queue changes what
         # the run *reports* about the pre-claim interval and nothing it
         # measures, and the mock's simulated claim delay changes when the

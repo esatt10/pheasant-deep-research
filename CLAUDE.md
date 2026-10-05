@@ -54,7 +54,9 @@ needs that the README does not carry.
 
 ```bash
 ./scripts/bootstrap.sh
-uv run pheasant-lab demo --config configs/demo.yaml   # offline, ~12s, free
+uv run pheasant-lab demo --config configs/demo.yaml   # offline, ~20s, free
+uv run pheasant-lab run --config configs/demo.yaml    # the supervised pipeline; --resume <run> carries one on
+uv run pheasant-lab draft-topic --config configs/demo.yaml --intent "…"  # draft a topic, writes nothing
 make check                                            # lint + schemas + tests
 uv run python scripts/export_schemas.py               # after changing a record shape
 make ui && uv run pheasant-lab serve                  # the console, http://127.0.0.1:8770
@@ -158,6 +160,25 @@ make ui && uv run pheasant-lab serve                  # the console, http://127.
   carry one) and marked `placed: by_time`/`by_question`; otherwise it stays
   loose. Prompts and completions are not recorded, only their digests,
   tokens and spend, and the trace view says so.
+- **A run is its directory, and it survives the process running it.**
+  `raw/*.jsonl` is authoritative and append-only; `state.json` is a
+  checkpoint. Whole-file writes go through `lifecycle.durable_write_text`
+  (unique temp, `fsync`, rename, directory `fsync`), and `RunState.save`
+  runs `Tracer.sync` first, so no checkpoint names work the raw trace could
+  lose. A resumed `Tracer` cuts a torn final line into `integrity/torn/` and
+  records `run.repaired`. Collection checkpoints `collect_progress` after the
+  plan and after every round, and resumes from it over state rehydrated from
+  `raw/`. Evaluation reuses recorded answers by (arm, question, repetition).
+  `pheasant-lab run` (`supervisor.py`) runs each stage as a child and resumes
+  one that crashes. `docs/durability.md` has the whole table.
+- **A topic may carry an intent.** `Topic.intent` is the person's own words,
+  and the planner's brief on every run. It is left out of the digest while
+  unset, like every field added after runs existed. "Seed terms or an intent"
+  is enforced where a topic is *added* (`console/topics.py`), not at load,
+  because topics files with neither loaded before and must keep loading.
+  `draft-topic` (`orchestration/drafter.py`) proposes one from an intent
+  under its own reserve-first budget; under `replay` it is rule-based and
+  says so.
 - **The pre-claim interval is recorded, not inferred.** On a role-split
   Pheasant `sync_source` answers `status: queued`; the lab emits
   `ingest.sync` with that disposition, one `ingest.barrier` per acknowledge
@@ -258,6 +279,20 @@ make ui && uv run pheasant-lab serve                  # the console, http://127.
 - **A drag ends in a click.** Panning a canvas by dragging across a node
   selected that node on release. `components/zoom.tsx` swallows the click
   after a real drag, in the capture phase so no node handler sees it.
+- **An unhandled exception exited `1`, which already meant "completed, and a
+  decision failed".** A supervisor could not tell a crash to resume from a
+  result to keep. Crashes exit `3` now; `1` stays a result.
+- **A pipe is a leash.** The console read its children's output through a
+  pipe, so a console that died took every run with it at the child's next
+  `print` (`BrokenPipeError`), contradicting the README's "closing the
+  console does not stop a run". Children get their own session and a log
+  file now, and launch records are files a restarted console re-attaches to.
+- **A resumed process knew only its own receipts.** Documents the dead
+  process submitted were never acknowledged and stayed `accepted` forever:
+  searchable in the region, counted as never indexed. `ReceiptLedger.restore`
+  rebuilds the ledger from `ingest-receipts.jsonl`. Found by comparing a
+  crashed-and-resumed run to a clean one, the property the durability tests
+  now assert.
 - **Events and receipts are two files, read in either order.** Stamping
   "awaiting claim" on documents when the queued sync arrived missed every
   document whose acceptance was read afterwards. The claim state lives on the
