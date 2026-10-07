@@ -48,7 +48,29 @@ ROLES: tuple[str, ...] = (
 )
 
 PROVIDERS: tuple[str, ...] = ("replay", "openai", "anthropic")
-REASONING_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high")
+#: Every reasoning level some OpenAI model accepts. Which ones a given model
+#: takes is model-dependent (``MODEL_REASONING``); the GPT-6 family takes none
+#: of ``minimal``, and gpt-6.1-sol refuses ``none`` too.
+REASONING_EFFORTS: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+#: What the models we recommend accept, checked 2026-10-07 (OpenAI's model
+#: pages as relayed by the listings cited in configs/pricing.example.yaml). A
+#: model not named here is not checked: the provider decides.
+MODEL_REASONING: dict[str, tuple[str, ...]] = {
+    "gpt-6.1-sol": ("low", "medium", "high", "xhigh", "max"),
+    "gpt-6-sol": ("none", "low", "medium", "high", "xhigh", "max"),
+    "gpt-6-luna": ("none", "low", "medium", "high", "xhigh", "max"),
+}
+
+
+def unsupported_effort(model: str, effort: str | None) -> str | None:
+    """Why ``effort`` would be refused by ``model``, or ``None`` if it is fine or unknown."""
+
+    accepted = MODEL_REASONING.get(model)
+    if effort is None or accepted is None or effort in accepted:
+        return None
+    return f"{model} does not accept reasoning effort {effort!r}; it takes {', '.join(accepted)}"
+
+
 #: Offered as suggestions, never enforced: a model id is the provider's to
 #: define, and a list here would refuse next month's model.
 MODEL_SUGGESTIONS: tuple[str, ...] = (
@@ -640,9 +662,11 @@ DOCS: dict[str, Doc] = {
         suggestions=MODEL_SUGGESTIONS,
     ),
     "models.<role>.reasoning_effort": Doc(
-        "How long the model may think before answering. OpenAI receives it as reasoning.effort; "
-        "Anthropic maps medium/high to extended thinking. Reasoning models ignore temperature.",
-        "Empty (provider default), minimal, low, medium or high.",
+        "How long the model may think before answering; thinking tokens bill as output. OpenAI "
+        "receives it as reasoning.effort; Anthropic maps medium and up to extended thinking. "
+        "Reasoning models ignore temperature.",
+        "Empty (the model's default, medium for GPT-6), or none, low, medium, high, xhigh, max. "
+        "Model-dependent: gpt-6.1-sol refuses none, and no GPT-6 model takes minimal.",
         choices=(None, *REASONING_EFFORTS),
         label="reasoning level",
     ),
@@ -1243,6 +1267,11 @@ def catalog(config: LabConfig | None = None, *, include_advanced: bool = True) -
                     row["recommended"] = "openai"
             if config is not None:
                 row["current"] = current_value(config, key)
+                if "<role>" in leaf.key and key.endswith(".reasoning_effort"):
+                    model = config.models[row["role"]].model
+                    if model in MODEL_REASONING:
+                        # Offer only what this role's model takes.
+                        row["choices"] = [None, *MODEL_REASONING[model]]
             fields.append(row)
     # Role fields read role by role (all of the researcher's, then the
     # auditor's), where they were derived field by field.
@@ -1331,6 +1360,10 @@ def advise(config: LabConfig) -> list[dict[str, Any]]:
     """Advice the form shows beside the fields: things that resolve, and mislead."""
 
     notes: list[Check] = []
+    for role, spec in sorted(config.models.items()):
+        problem = unsupported_effort(spec.model, spec.reasoning_effort)
+        if problem:
+            notes.append(Check(f"models.{role}.reasoning_effort", "warn", f"{role}: {problem}."))
     answerers = [r for r in ("specialist", "control", "test_agent") if r in config.models]
     pairs = {(config.models[r].model, config.models[r].reasoning_effort) for r in answerers}
     # The offline replay provider names a model per role on purpose and has

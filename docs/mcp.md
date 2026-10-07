@@ -49,7 +49,7 @@ reason in words.
 ```text
 lab_describe_settings  {"section": "models"}           # what each role does, recommended model + reasoning
 lab_apply_recommended_models {}                        # GPT-6.1 Sol / GPT-6 Luna per role
-lab_set_price          {"model": "gpt-6.1-sol", "input_usd": …, "output_usd": …}
+lab_list_prices        {}                              # gpt-6.1-sol, gpt-6-sol, gpt-6-luna ship priced
 lab_set_budget         {"cost_budget_usd": 25, "launch_max_cost_usd": 10}
 lab_select_connection  {"name": "docker"}
 lab_draft_topic        {"intent": "…", "model": "gpt-6-luna", "context": {"details": "…"}}
@@ -74,6 +74,14 @@ reasoning level:
 | researcher, auditor | `gpt-6-luna`, medium | the volume roles: many concurrent calls over passages already in hand |
 | benchmark_builder | `gpt-6.1-sol`, high | called once; every metric is measured against what it writes |
 | specialist, control, test_agent | `gpt-6.1-sol`, high — **the same for all three** | `P1 − S0` must compare Pheasant with the sources, not one model with another |
+
+Shipped prices (USD per million tokens, Standard tier, checked 2026-10-07):
+`gpt-6.1-sol` and `gpt-6-sol` $2.00 input / $10.00 output, `gpt-6-luna`
+$0.10 / $0.50. Reasoning levels are model-dependent: the GPT-6 family takes
+`none|low|medium|high|xhigh|max` (default `medium`), `gpt-6.1-sol` refuses
+`none`, and none of them takes `minimal`. The catalog offers each role only the
+levels its model accepts, and `doctor` refuses a combination the model would
+reject. `lab_set_price` overrides a price or adds one for another model.
 
 The catalog is derived from the configuration models: a field with no
 explanation, or an explanation for a field that is gone, fails

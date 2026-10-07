@@ -803,6 +803,21 @@ class LabConfig(_Model):
         # measures, and the mock's simulated claim delay changes when the
         # barrier crosses, not what it crosses with. Left out so a pheasant
         # file that gains them still resumes runs started before.
+        # A run is held to the prices of the models it uses, not to the whole
+        # list: a price added for a model no role names cannot change what the
+        # run spends or measures, and digesting it made every interrupted run
+        # unresumable whenever a new model was priced. Changing a used model's
+        # price still moves the digest, as does the list's `version` - bump it
+        # when a price changes, not when one is added. A list holding only
+        # used models digests exactly as it did before this filter existed.
+        pricing = payload.get("pricing")
+        if isinstance(pricing, dict):
+            used = {spec.model for spec in self.models.values()}
+            if self.proof.judging.enabled and self.proof.judging.model:
+                used.add(self.proof.judging.model)
+            pricing["models"] = {
+                name: price for name, price in (pricing.get("models") or {}).items() if name in used
+            }
         pheasant = payload.get("pheasant")
         if isinstance(pheasant, dict):
             capabilities = pheasant.get("capabilities")

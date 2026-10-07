@@ -126,7 +126,8 @@ Under **Research topics**, **+ New topic** opens a form.
    uses the configured planner instead; offline, under `replay`, that draft is
    rule-based and says so. Every call goes through `pheasant-lab draft-topic`
    under its own small budget (`--max-cost-usd`, default $0.25, reserved
-   before the call), so a hosted model needs a price first.
+   before the call). GPT-6.1 Sol and GPT-6 Luna ship priced; they need
+   `OPENAI_API_KEY`, and the refusal says so if it is missing.
 
    ![The drafted topic, ready to edit](images/topic-intent-drafted.png)
 

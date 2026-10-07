@@ -442,6 +442,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             "not map `expand`; map it (pheasant >= 0.13.1) or "
             "unset replay.graph_expansion"
         )
+    from .catalog import unsupported_effort
+
+    for role, spec in sorted(config.models.items()):
+        problem = unsupported_effort(spec.model, spec.reasoning_effort)
+        if problem:
+            findings.append(f"models.{role}: {problem}")
     if config.replay.min_score is not None and "min_score" not in search_map:
         findings.append(
             "replay.min_score is set but the pheasant file's argument_map.search does not map "

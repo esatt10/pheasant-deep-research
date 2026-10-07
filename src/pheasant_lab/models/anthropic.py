@@ -42,8 +42,9 @@ class AnthropicProvider(ModelProvider):
                 {"role": "assistant", "content": "{"},
             ],
         }
-        if self.spec.reasoning_effort in {"high", "medium"}:
-            budget = 8000 if self.spec.reasoning_effort == "high" else 4000
+        budgets = {"medium": 4000, "high": 8000, "xhigh": 16000, "max": 32000}
+        if self.spec.reasoning_effort in budgets:
+            budget = budgets[self.spec.reasoning_effort]
             body["thinking"] = {"type": "enabled", "budget_tokens": budget}
             body["max_tokens"] = max(body["max_tokens"], budget + 1024)
             body.pop("temperature", None)

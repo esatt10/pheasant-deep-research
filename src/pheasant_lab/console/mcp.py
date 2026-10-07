@@ -201,17 +201,18 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         "lab_set_role_model",
         "Set an agent role's model. Roles: orchestrator, planner, researcher, auditor, "
-        "benchmark_builder, specialist, control, test_agent. reasoning_effort: minimal, low, "
-        "medium, high, or null for the provider default. lab_describe_settings section=models "
-        "gives each role's recommendation.",
+        "benchmark_builder, specialist, control, test_agent. reasoning_effort: none, low, "
+        "medium, high, xhigh, max, or null for the model's default (gpt-6.1-sol refuses none; "
+        "no GPT-6 model takes minimal). lab_describe_settings section=models gives each role's "
+        "recommendation and the levels its model accepts.",
         {
             "role": _s("The role."),
             "provider": _s("openai, anthropic or replay.", enum=["openai", "anthropic", "replay"]),
             "model": _s("Model id, e.g. gpt-6.1-sol or gpt-6-luna."),
             "reasoning_effort": _s(
-                "minimal, low, medium, high, or null.",
+                "none, low, medium, high, xhigh, max, or null.",
                 ["string", "null"],
-                enum=["minimal", "low", "medium", "high", None],
+                enum=["none", "minimal", "low", "medium", "high", "xhigh", "max", None],
             ),
             "max_output_tokens": _s("Cap per call; also what the budget reserves.", "integer"),
         },
@@ -338,7 +339,7 @@ TOOLS: tuple[Tool, ...] = (
             "intent": _s("What you want to find out, in your own words."),
             "seed_terms": _s("Terms you already have.", "array", items={"type": "string"}),
             "model": _s("e.g. gpt-6.1-sol or gpt-6-luna."),
-            "reasoning_effort": _s("minimal, low, medium or high."),
+            "reasoning_effort": _s("none, low, medium, high, xhigh or max."),
             "context": _s("The form so far.", "object"),
             "max_cost_usd": _s("Cap for this one call (default 0.25).", "number"),
         },

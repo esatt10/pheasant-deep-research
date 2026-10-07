@@ -244,6 +244,14 @@ docker compose up -d --build                          # lab + a pheasant 0.13.5 
 - **A run records where it was made.** `environment.deployment` (from
   `PHEASANT_LAB_DEPLOYMENT`, `docker` in the image); a console with a run
   scope lists, reads and deletes only those runs. Not digested.
+- **A run digests the prices of the models it uses, not the whole list.**
+  `LabConfig.digest` filters `pricing.models` to the roles' models (and the
+  judge's), so pricing a new model moves no existing run; changing a used
+  price, or the list's `version`, still does. Bump `version` when a price
+  changes, not when one is added. The GPT-6 family ships priced, and
+  `catalog.MODEL_REASONING` records which reasoning levels each takes:
+  `doctor` refuses a level the model would reject, and the form offers only
+  the accepted ones.
 - **What a person calls a run is not the run.** Labels and notes live in
   `.console/run-labels.json`; the run directory stays append-only evidence.
 

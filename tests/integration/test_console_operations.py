@@ -187,11 +187,16 @@ def test_role_models_take_the_recommendation(console) -> None:
     assert values["models.researcher.model"] == "gpt-6-luna"
     assert values["models.planner.model"] == "gpt-6.1-sol"
     assert values["models.planner.reasoning_effort"] == "high"
-    # Unpriced models are a refusal the draft reports, not a silent free model.
+    # The shipped price list holds both, so the draft resolves as it is.
+    assert body["valid"] is True, body["error"]
+    _, prices = _tool(base, "lab_list_prices")
+    assert prices["models"]["gpt-6.1-sol"] == {"input": 2.0, "output": 10.0}
+    assert prices["models"]["gpt-6-luna"] == {"input": 0.1, "output": 0.5}
+    # A model with no price is a refusal the draft reports, never a free model.
+    _, body = _tool(base, "lab_set_role_model", role="auditor", model="gpt-7-hypothetical")
     assert body["valid"] is False and "price" in body["error"]
-    _, prices = _tool(base, "lab_set_price", model="gpt-6-luna", input_usd=0.5, output_usd=2)
-    assert prices["models"]["gpt-6-luna"] == {"input": 0.5, "output": 2.0}
-    _, prices = _tool(base, "lab_set_price", model="gpt-6.1-sol", input_usd=2, output_usd=8)
+    _, prices = _tool(base, "lab_set_price", model="gpt-7-hypothetical", input_usd=3, output_usd=12)
+    assert prices["models"]["gpt-7-hypothetical"] == {"input": 3.0, "output": 12.0}
     _, settings = _tool(base, "lab_get_settings")
     assert settings["valid"] is True, settings["error"]
 
@@ -354,14 +359,14 @@ def test_a_topic_is_drafted_with_context_saved_and_selected_over_mcp(console) ->
     assert listed["selected"] is None
 
 
-def test_a_hosted_draft_without_a_price_is_refused_in_words(console) -> None:
+def test_a_hosted_draft_is_refused_in_words_until_it_can_be_paid_for(console) -> None:
     base, _ = console
-    result, _ = _tool(
-        base,
-        "lab_draft_topic",
-        intent="Why do some tardigrades survive radiation?",
-        model="gpt-6.1-sol",
-    )
+    intent = "Why do some tardigrades survive radiation?"
+    # Priced, but the suite holds no key: the refusal says which one.
+    result, _ = _tool(base, "lab_draft_topic", intent=intent, model="gpt-6.1-sol")
+    assert result["isError"] and "OPENAI_API_KEY" in result["content"][0]["text"]
+    # Unpriced: the refusal says where to give it a price.
+    result, _ = _tool(base, "lab_draft_topic", intent=intent, model="gpt-7-hypothetical")
     assert result["isError"]
-    assert "gpt-6.1-sol" in result["content"][0]["text"]
+    assert "gpt-7-hypothetical" in result["content"][0]["text"]
     assert "Model prices" in result["content"][0]["text"]

@@ -1,5 +1,9 @@
 # Versioned local pricing, in USD per 1,000,000 tokens.
 #
+# `version` is the edition of the prices runs are held to: bump it when a
+# price changes. Adding a model does not need a bump - a run digests only the
+# prices of the models it uses, so a new entry moves no existing run.
+#
 # A model that is not listed here fails preflight when
 # `pricing.fail_when_model_price_missing` is true, which is the default: a
 # model treated as free is a budget guard that does not exist.
@@ -17,7 +21,25 @@ models:
   "replay:control": { input: 0.0, output: 0.0 }
   "replay:benchmark": { input: 0.0, output: 0.0 }
 
-  # Fill in from your provider's published price list before a paid run. The
-  # numbers below are placeholders and are deliberately not maintained here.
-  # "gpt-5": { input: 0.00, output: 0.00 }
-  # "claude-opus-5": { input: 0.00, output: 0.00 }
+  # OpenAI GPT-6 family, Standard tier, checked 2026-10-07 against OpenAI's
+  # announced rates as relayed by OpenRouter, Requesty and the launch
+  # coverage (openai.com itself was not reachable from where this was
+  # written - re-check https://openai.com/api/pricing/ before a large run).
+  #
+  #   gpt-6.1-sol  successor to gpt-6-sol, same base price. Reasoning effort
+  #                low|medium|high|xhigh|max (default medium); it rejects
+  #                none and minimal.
+  #   gpt-6-sol    reasoning effort none|low|medium|high|xhigh|max.
+  #   gpt-6-luna   reasoning effort none|low|medium|high|xhigh|max.
+  #
+  # What the budget guard does not model, deliberately conservative or not
+  # applicable here: cached-input discounts (Sol $0.10-0.20, Luna $0.01 per
+  # million - the guard reserves the full input rate, an overestimate);
+  # Batch/Flex at half price (the lab does not use them); Fast mode at 2x (it
+  # does not request it); and the long-context rate, 2x input and 1.5x output
+  # for a whole request over 272,000 input tokens - the lab's prompts are a few
+  # thousand tokens, nowhere near it. Reasoning tokens bill as output, and the
+  # guard reserves a call's full max_output_tokens, so they are covered.
+  "gpt-6.1-sol": { input: 2.00, output: 10.00 }
+  "gpt-6-sol": { input: 2.00, output: 10.00 }
+  "gpt-6-luna": { input: 0.10, output: 0.50 }

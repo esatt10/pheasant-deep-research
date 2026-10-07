@@ -477,6 +477,12 @@ class Operations:
             message = message.removeprefix("refused: ")
             if "no price for model" in message:
                 message += " Set one under Configure → Agents & models → Model prices (or the lab_set_price tool)."
+            elif "_API_KEY is not set" in message:
+                message = message.replace("; doctor should have refused this run", "")
+                message += (
+                    " Put it in .env (in Docker, the lab service's environment) and restart the "
+                    "console."
+                )
             raise ValueError(message)
         return json.loads(output[output.index("{") :])
 

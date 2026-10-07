@@ -44,8 +44,10 @@ the replay provider was used, so the numbers measure retrieval, not a model.
 From there, change anything from the console or its MCP tools — every change is
 an ordinary `--set`:
 
-- **Agents & models → Use recommended for all**, then price the models under
-  **Model prices** (a model with no price is refused before any spend).
+- **Agents & models → Use recommended for all** (GPT-6.1 Sol and GPT-6 Luna;
+  they need `OPENAI_API_KEY` in `.env`). Their prices
+  ship in `configs/pricing.example.yaml`; any other model needs one under
+  **Model prices**, because a model with no price is refused before any spend.
 - **Collection profile** for the scholarly or web providers.
 - **Budget** for the dollar ceiling, the per-phase split and a per-launch cap.
 - **Pheasant connection** for another region.
