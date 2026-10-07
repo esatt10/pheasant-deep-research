@@ -18,6 +18,10 @@ export interface RunRow {
   interrupted: boolean;
   live: boolean;
   resumable: boolean;
+  deployment?: string;
+  label?: string | null;
+  notes?: string | null;
+  kept?: boolean;
 }
 
 export interface Phase {
@@ -245,6 +249,112 @@ export interface Resolved {
   models: Record<string, string>;
   unresolved_env: string[];
   source_files: Record<string, string>;
+  /** Every catalog field's value in force, by its --set key. */
+  values?: Record<string, unknown>;
+  advice?: Advice[];
+}
+
+/* ---- settings catalog, draft, connections (console/operations.py) ------ */
+
+export interface Advice {
+  key: string;
+  level: "warn" | "info";
+  message: string;
+  related: string[];
+}
+
+export interface CatalogField {
+  key: string;
+  section: string;
+  label: string;
+  kind: "int" | "float" | "bool" | "str" | "enum" | "list" | "map" | "any";
+  nullable: boolean;
+  default: unknown;
+  choices: unknown[] | null;
+  suggestions: string[] | null;
+  minimum: number | null;
+  maximum: number | null;
+  unit: string | null;
+  help: string;
+  values: string;
+  advanced: boolean;
+  moves_digest: boolean;
+  current?: unknown;
+  recommended?: string;
+  role?: string;
+}
+
+export interface RoleAdviceRow {
+  role: string;
+  does?: string;
+  model?: string;
+  reasoning_effort?: string;
+  why?: string;
+  calls?: string;
+}
+
+export interface Catalog {
+  sections: { key: string; title: string; blurb: string }[];
+  fields: CatalogField[];
+  roles: RoleAdviceRow[];
+  draft_models: { model: string; provider: string; reasoning_effort: string; label: string; note: string }[];
+  reasoning_efforts: string[];
+  providers: string[];
+  advice: Advice[];
+}
+
+export interface Draft {
+  revision: number;
+  updated_at: number | null;
+  updated_by: string | null;
+  config: string;
+  overrides: Record<string, string>;
+  topic: string | null;
+  connection: string | null;
+  launch: { max_cost_usd: number | null; label: string | null; arms?: string | null };
+}
+
+export interface Settings {
+  draft: Draft;
+  valid: boolean;
+  error: string | null;
+  resolved: Resolved | null;
+}
+
+export interface Connection {
+  name: string;
+  description: string;
+  transport: "streamable_http" | "stdio" | "mock";
+  url: string | null;
+  command: string | null;
+  knowledge_base: string | null;
+  source_name: string | null;
+  token_env: string | null;
+  mock_claim_seconds: number | null;
+  shipped: boolean;
+  edited: boolean;
+  token_stored: boolean;
+  token_in_environment: boolean;
+}
+
+export interface Prices {
+  source: string;
+  local_file: string;
+  unit: string;
+  currency: string;
+  models: Record<string, { input: number; output: number }>;
+  unpriced_in_use: string[];
+  in_force: string;
+}
+
+export interface Budget {
+  cost_budget_usd: number;
+  runtime_budget_minutes: number;
+  allocation: Record<string, number>;
+  evaluation_budget_reserve_fraction: number;
+  launch_max_cost_usd: number | null;
+  draft_budget_usd: number;
+  explain: Record<string, string>;
 }
 
 export interface RegionProbe {
@@ -386,6 +496,7 @@ export interface TopicDoc {
   id: string;
   title: string;
   intent?: string | null;
+  details?: string | null;
   seed_terms: string[];
   date_range: { from: string | null; to: string | null };
   facets: TopicFacet[];
@@ -397,6 +508,7 @@ export interface TopicList {
   local_file: string;
   override: string;
   topics: TopicDoc[];
+  selected?: string | null;
 }
 
 export interface TopicDraft extends TopicDoc {

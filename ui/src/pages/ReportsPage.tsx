@@ -20,6 +20,41 @@ export function ReportsPage({ view = "reports" }: { view?: "reports" | "traces" 
   const [name, setName] = useState("summary.md");
   const [html, setHtml] = useState("");
   const [loadingReport, setLoadingReport] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [epoch, setEpoch] = useState(0);
+  const current = runs.data?.find((run) => run.run_id === runId);
+
+  // Reports are derived from the raw trace: rendering them again is a
+  // `report` launch, and deleting them loses nothing a re-render cannot bring back.
+  const regenerate = async () => {
+    if (!runId) return;
+    setNotice(null);
+    try {
+      const launch = await api.generateReports(runId);
+      setNotice(`Rendering reports (launch ${launch.launch_id})…`);
+      for (let attempt = 0; attempt < 120; attempt += 1) {
+        await new Promise((r) => setTimeout(r, 1000));
+        const row = (await api.launches()).find((l) => l.launch_id === launch.launch_id);
+        if (row && row.status !== "running") {
+          setNotice(row.status === "succeeded" || row.status === "completed_with_findings" ? "Reports rendered." : `Report launch ${row.status.replace(/_/g, " ")}.`);
+          break;
+        }
+      }
+      setEpoch((n) => n + 1);
+    } catch (caught) {
+      setNotice((caught as Error).message);
+    }
+  };
+  const dropReports = async () => {
+    if (!runId || !window.confirm("Delete this run's rendered reports? Regenerate renders them again from the raw trace.")) return;
+    try {
+      await api.deleteReports(runId);
+      setNotice("Reports deleted.");
+      setEpoch((n) => n + 1);
+    } catch (caught) {
+      setNotice((caught as Error).message);
+    }
+  };
 
   useEffect(() => {
     if (!runId && runs.data?.length)
@@ -36,7 +71,7 @@ export function ReportsPage({ view = "reports" }: { view?: "reports" | "traces" 
       })
       .catch(() => setNames([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runId, view]);
+  }, [runId, view, epoch]);
 
   useEffect(() => {
     if (!runId || !names.includes(name)) {
@@ -63,6 +98,7 @@ export function ReportsPage({ view = "reports" }: { view?: "reports" | "traces" 
         >
           {(runs.data ?? []).map((run) => (
             <option key={run.run_id} value={run.run_id}>
+              {run.label ? `${run.label} · ` : ""}
               {run.run_id} · {run.topic_title ?? run.experiment}
             </option>
           ))}
@@ -75,7 +111,18 @@ export function ReportsPage({ view = "reports" }: { view?: "reports" | "traces" 
             Agent traces
           </button>
         </div>
+        {view === "reports" && runId ? (
+          <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+            <button className="btn btn--small" disabled={current?.live} onClick={() => void regenerate()}>
+              {names.length ? "Regenerate reports" : "Render reports"}
+            </button>
+            <button className="btn btn--small btn--danger" disabled={current?.live || names.length === 0} onClick={() => void dropReports()}>
+              Delete reports
+            </button>
+          </div>
+        ) : null}
       </div>
+      {notice ? <div className="pill pill--info" style={{ whiteSpace: "normal" }}>{notice}</div> : null}
       {view === "traces" ? (
         runId ? <Traces runId={runId} actorId={actor} /> : <div className="card empty">No runs yet.</div>
       ) : (

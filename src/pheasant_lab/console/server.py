@@ -30,11 +30,14 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from pydantic import ValidationError
 
+from ..catalog import advise, catalog
 from ..settings import ConfigError, load_config, load_dotenv
-from .launcher import Launcher
+from .launcher import Launch, Launcher
 from .logs import LogControl
-from .projection import RunWatcher, fold_until, list_runs
+from .mcp import handle_jsonrpc, mcp_info
+from .projection import RunWatcher, fold_until, in_scope
 from .region import probe_region
+from .state import Connections, Prices, RunLabels, Secrets, Workspace
 from .topics import add_topic, topic_rows
 from .traces import RunTraces
 
@@ -47,6 +50,8 @@ STREAM_PAGE = 400
 TOKEN_ENV = "PHEASANT_LAB_CONSOLE_TOKEN"
 #: Answered without a key: the shell that asks for one, and whether one is needed.
 PUBLIC_API = frozenset({"/api/auth"})
+#: Where the MCP endpoint answers. ``/mcp`` is what MCP clients are given.
+MCP_PATHS = frozenset({"/mcp", "/api/mcp"})
 
 
 class Unauthenticated(RuntimeError):
@@ -74,18 +79,39 @@ class Console:
         output_root: Path,
         default_config: str,
         ui_dist: Path | None,
+        run_scope: str | None = None,
     ) -> None:
         self.project_root = project_root
         self.output_root = output_root
         self.default_config = default_config
         self.ui_dist = ui_dist
-        self.launcher = Launcher(project_root, output_root)
-        self.logs = LogControl(output_root, self.launcher)
+        #: Only runs whose manifest says they were made in this deployment
+        #: (``docker`` in the lab image) are listed, read or deleted.
+        self.run_scope = run_scope or None
+        home = output_root / ".console"
+        self.secrets = Secrets(home / "secrets.json")
+        self.connections = Connections(project_root, self.secrets)
+        self.prices = Prices(project_root)
+        self.labels = RunLabels(home)
+        self.workspace = Workspace(home, default_config)
+        #: The cap on one topic-draft call; ``draft-topic`` reserves it first.
+        self.draft_budget_usd = 0.25
+        self.launcher = Launcher(
+            project_root, output_root, extra_env=self.secrets.environment, on_run=self._labelled
+        )
+        self.logs = LogControl(output_root, self.launcher, scope=self.run_scope)
         self._watchers: dict[str, RunWatcher] = {}
         self._lock = threading.Lock()
         #: The console's own access key, or ``None`` for an open (loopback) console.
         self.token: bytes | None = None
         self.env_file: str | None = ".env"
+        from .operations import Operations
+
+        self.ops = Operations(self)
+
+    def _labelled(self, run_id: str, launch: Launch) -> None:
+        if launch.label:
+            self.labels.set(run_id, label=launch.label)
 
     def environment(self) -> dict[str, str]:
         """The process environment over the project's ``.env``.
@@ -96,7 +122,9 @@ class Console:
         """
 
         values = load_dotenv(self.project_root / self.env_file) if self.env_file else {}
-        return {**values, **os.environ}
+        # A token stored for a connection is what a launched run is handed,
+        # so the console's own probes read it too.
+        return {**values, **os.environ, **self.secrets.environment()}
 
     def authorized(self, header: str | None) -> bool:
         if self.token is None:
@@ -112,6 +140,8 @@ class Console:
     def watcher(self, run_id: str) -> RunWatcher:
         root = (self.output_root / run_id).resolve()
         if root.parent != self.output_root.resolve() or not (root / "run-manifest.json").is_file():
+            raise KeyError(run_id)
+        if not in_scope(root, self.run_scope):
             raise KeyError(run_id)
         with self._lock:
             watcher = self._watchers.get(run_id)
@@ -191,6 +221,10 @@ class Console:
             "models": {role: spec.model for role, spec in resolved.models.items()},
             "unresolved_env": resolved.unresolved_env,
             "source_files": resolved.source_files,
+            # Every catalog field's resolved value, by its --set key, so a form
+            # reads "what is in force" without walking the tree itself.
+            "values": {row["key"]: row["current"] for row in catalog(resolved)["fields"]},
+            "advice": advise(resolved),
         }
 
 
@@ -260,6 +294,14 @@ def make_handler(console: Console) -> type[BaseHTTPRequestHandler]:
             multi = parse_qs(url.query)
             query = {k: v[-1] for k, v in multi.items()}
             parts = [p for p in url.path.split("/") if p]
+            if url.path.rstrip("/") in MCP_PATHS:
+                # No server-initiated stream is offered (streamable HTTP lets
+                # a server decline one with 405); every answer is a POST reply.
+                return self._json(
+                    {"detail": "POST JSON-RPC to this endpoint; no GET stream is offered"},
+                    status=HTTPStatus.METHOD_NOT_ALLOWED,
+                    headers={"Allow": "POST"},
+                )
             if not self._guard(url.path):
                 return None
             try:
@@ -274,12 +316,33 @@ def make_handler(console: Console) -> type[BaseHTTPRequestHandler]:
                         }
                     )
                 if route == ["runs"]:
-                    live = console.launcher.live_runs()
-                    rows = list_runs(console.output_root)
-                    for row in rows:
-                        row["live"] = row["run_id"] in live
-                        row["resumable"] = not row["live"] and not row["complete"]
-                    return self._json(rows)
+                    return self._json(console.ops.list_runs())
+                if len(route) == 3 and route[0] == "runs" and route[2] == "detail":
+                    return self._json(console.ops.get_run(route[1]))
+                if route == ["settings"]:
+                    return self._json(console.ops.get_settings())
+                if route == ["settings", "catalog"]:
+                    return self._json(
+                        console.ops.describe_settings(
+                            section=query.get("section") or None,
+                            key=query.get("key") or None,
+                            include_advanced=query.get("advanced", "1") not in {"0", "false"},
+                        )
+                    )
+                if route == ["settings", "command"]:
+                    return self._json(console.ops.command_line())
+                if route == ["budget"]:
+                    return self._json(console.ops.get_budget())
+                if route == ["prices"]:
+                    return self._json(console.ops.prices())
+                if route == ["connections"]:
+                    return self._json(console.ops.list_connections())
+                if len(route) == 3 and route[0] == "connections" and route[2] == "probe":
+                    return self._json(console.ops.probe_connection(unquote(route[1])))
+                if route == ["plan"]:
+                    return self._json(console.ops.plan())
+                if route == ["mcp", "info"]:
+                    return self._json(mcp_info(console))
                 if len(route) == 2 and route[0] == "runs":
                     watcher = console.watcher(route[1])
                     if query.get("until"):
@@ -346,12 +409,49 @@ def make_handler(console: Console) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:
             url = urlparse(self.path)
             parts = [p for p in url.path.split("/") if p][1:]
+            if url.path.rstrip("/") in MCP_PATHS:
+                return self._mcp_post()
             if not self._guard(url.path):
                 return None
             try:
                 body = self._body()
                 config = str(body.get("config") or console.default_config)
                 overrides = [str(item) for item in body.get("set") or []]
+                who = "ui" if self.headers.get("X-Pheasant-Lab-Client") == "ui" else "api"
+                if parts == ["settings", "reset"]:
+                    return self._json(console.ops.reset_settings(by=who))
+                if parts == ["models", "recommended"]:
+                    return self._json(
+                        console.ops.apply_recommended_models(by=who, roles=body.get("roles"))
+                    )
+                if parts == ["connections"]:
+                    connection = body.get("connection")
+                    if not isinstance(connection, dict):
+                        raise ValueError("body.connection must be an object")
+                    token = body.get("token")
+                    saved = console.ops.save_connection(
+                        connection, token=None if token is None else str(token)
+                    )
+                    return self._json(saved, status=HTTPStatus.CREATED)
+                if parts == ["connections", "select"]:
+                    return self._json(console.ops.select_connection(body.get("name"), by=who))
+                if parts == ["topics", "select"]:
+                    return self._json(console.ops.select_topic(body.get("topic"), by=who))
+                if parts == ["runs", "launch"]:
+                    launched = console.ops.launch(
+                        kind=str(body.get("kind") or "pipeline"),
+                        label=body.get("label"),
+                        run_id=body.get("run_id"),
+                        max_cost_usd=body.get("max_cost_usd"),
+                    )
+                    return self._json(launched, status=HTTPStatus.ACCEPTED)
+                if len(parts) == 3 and parts[0] == "runs" and parts[2] == "reports":
+                    return self._json(
+                        console.ops.generate_reports(parts[1]), status=HTTPStatus.ACCEPTED
+                    )
+                if len(parts) == 3 and parts[0] == "runs" and parts[2] == "resume":
+                    launched = console.ops.launch(kind="resume", run_id=parts[1])
+                    return self._json(launched, status=HTTPStatus.ACCEPTED)
                 if parts == ["config", "resolve"]:
                     return self._json(console.resolve(config, overrides))
                 if parts in (["plan"], ["doctor"]):
@@ -376,20 +476,19 @@ def make_handler(console: Console) -> type[BaseHTTPRequestHandler]:
                     # The console is a launcher: drafting is the CLI's
                     # `draft-topic`, so a draft from the browser and one from a
                     # terminal are the same call under the same budget guard.
-                    argv = ["draft-topic", "--config", config, "--json"]
-                    for item in overrides:
-                        argv += ["--set", item]
-                    argv += ["--intent", str(body.get("intent") or "")]
-                    seeds = [str(t) for t in body.get("seed_terms") or [] if str(t).strip()]
-                    if seeds:
-                        argv += ["--seed-terms", ",".join(seeds)]
-                    code, output = console.launcher.run_command(argv)
-                    if code != 0:
-                        message = output.strip().splitlines()[-1] if output.strip() else "failed"
-                        return self._error(
-                            HTTPStatus.BAD_REQUEST, message.removeprefix("refused: ")
+                    context = body.get("context")
+                    return self._json(
+                        console.ops.draft_topic(
+                            intent=str(body.get("intent") or ""),
+                            seed_terms=[str(t) for t in body.get("seed_terms") or []],
+                            model=body.get("model") or None,
+                            provider=body.get("provider") or None,
+                            reasoning_effort=body.get("reasoning_effort") or None,
+                            context=context if isinstance(context, dict) else None,
+                            config=config,
+                            overrides=overrides,
                         )
-                    return self._json(json.loads(output[output.index("{") :]))
+                    )
                 if parts == ["topics"]:
                     topic = body.get("topic")
                     if not isinstance(topic, dict):
@@ -411,6 +510,7 @@ def make_handler(console: Console) -> type[BaseHTTPRequestHandler]:
                         arms=body.get("arms"),
                         run_id=body.get("run_id"),
                         max_cost_usd=body.get("max_cost_usd"),
+                        label=body.get("label"),
                     )
                     return self._json(launch.as_dict(), status=HTTPStatus.ACCEPTED)
                 if len(parts) == 3 and parts[0] == "launches" and parts[2] == "stop":
@@ -445,11 +545,80 @@ def make_handler(console: Console) -> type[BaseHTTPRequestHandler]:
                 return None
             try:
                 body = self._body()
+                who = "ui" if self.headers.get("X-Pheasant-Lab-Client") == "ui" else "api"
                 if parts == ["logs", "retention"]:
                     policy = console.logs.set_policy(dict(body.get("policy") or {}))
                     return self._json({"policy": _asdict(policy), "plan": console.logs.plan()})
+                if parts == ["settings"]:
+                    keep = ...
+                    return self._json(
+                        console.ops.update_settings(
+                            by=who,
+                            set_values=body.get("set")
+                            if isinstance(body.get("set"), dict)
+                            else None,
+                            unset=list(body.get("unset") or []),
+                            replace_overrides=body.get("overrides")
+                            if isinstance(body.get("overrides"), dict)
+                            else None,
+                            config=body.get("config"),
+                            topic=body.get("topic", keep),
+                            connection=body.get("connection", keep),
+                            launch=body.get("launch")
+                            if isinstance(body.get("launch"), dict)
+                            else None,
+                            strict=bool(body.get("strict")),
+                            expected_revision=body.get("revision"),
+                        )
+                    )
+                if parts == ["budget"]:
+                    return self._json(
+                        console.ops.set_budget(
+                            by=who,
+                            cost_budget_usd=body.get("cost_budget_usd"),
+                            runtime_budget_minutes=body.get("runtime_budget_minutes"),
+                            allocation=body.get("allocation"),
+                            launch_max_cost_usd=body.get("launch_max_cost_usd", ...),
+                            evaluation_budget_reserve_fraction=body.get(
+                                "evaluation_budget_reserve_fraction"
+                            ),
+                        )
+                    )
+                if len(parts) == 2 and parts[0] == "models":
+                    return self._json(
+                        console.ops.set_role_model(
+                            by=who,
+                            role=parts[1],
+                            provider=body.get("provider"),
+                            model=body.get("model"),
+                            reasoning_effort=body.get("reasoning_effort", ...),
+                            max_output_tokens=body.get("max_output_tokens"),
+                        )
+                    )
+                if len(parts) == 2 and parts[0] == "prices":
+                    return self._json(
+                        console.ops.set_price(
+                            by=who,
+                            model=unquote(parts[1]),
+                            input_usd=float(body["input"]),
+                            output_usd=float(body["output"]),
+                        )
+                    )
+                if len(parts) == 2 and parts[0] == "runs":
+                    return self._json(
+                        console.ops.update_run(
+                            parts[1],
+                            label=body.get("label", ...),
+                            notes=body.get("notes", ...),
+                            keep=body.get("keep"),
+                        )
+                    )
                 return self._error(HTTPStatus.NOT_FOUND, f"no route {url.path}")
-            except (TypeError, ValueError) as exc:
+            except KeyError as exc:
+                return self._error(HTTPStatus.NOT_FOUND, f"unknown: {exc}")
+            except ValidationError as exc:
+                return self._error(HTTPStatus.BAD_REQUEST, _validation_text(exc))
+            except (TypeError, ValueError, ConfigError) as exc:
                 return self._error(HTTPStatus.BAD_REQUEST, str(exc))
 
         def do_DELETE(self) -> None:
@@ -465,14 +634,65 @@ def make_handler(console: Console) -> type[BaseHTTPRequestHandler]:
                 if len(parts) == 2 and parts[0] == "runs":
                     result = console.logs.delete_run(parts[1])
                     console.forget_run(parts[1])
+                    console.labels.forget(parts[1])
                     return self._json(result)
+                if len(parts) == 3 and parts[0] == "runs" and parts[2] == "reports":
+                    return self._json(console.ops.delete_reports(parts[1]))
+                who = "ui" if self.headers.get("X-Pheasant-Lab-Client") == "ui" else "api"
+                if len(parts) == 2 and parts[0] == "connections":
+                    return self._json(console.ops.delete_connection(unquote(parts[1]), by=who))
+                if len(parts) == 2 and parts[0] == "topics":
+                    return self._json(console.ops.delete_topic(unquote(parts[1]), by=who))
+                if len(parts) == 2 and parts[0] == "prices":
+                    return self._json(
+                        console.ops.set_price(
+                            by=who, model=unquote(parts[1]), input_usd=None, output_usd=None
+                        )
+                    )
                 return self._error(HTTPStatus.NOT_FOUND, f"no route {url.path}")
             except KeyError as exc:
                 return self._error(HTTPStatus.NOT_FOUND, f"unknown: {exc}")
-            except ValueError as exc:
+            except (ValueError, ConfigError) as exc:
                 return self._error(HTTPStatus.CONFLICT, str(exc))
 
         # -- routes --------------------------------------------------------
+        def _mcp_post(self) -> None:
+            """Streamable HTTP MCP, answered as plain JSON (no server-initiated stream).
+
+            Guarded by the console's key exactly like ``/api``: the tools can
+            start paid runs and delete them.
+            """
+
+            if console.token is not None and not console.authorized(
+                self.headers.get("Authorization")
+            ):
+                return self._json(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {"code": -32001, "message": "this console requires an access key"},
+                    },
+                    status=HTTPStatus.UNAUTHORIZED,
+                    headers={"WWW-Authenticate": 'Bearer realm="pheasant-lab console"'},
+                )
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(length) or b"null")
+            except ValueError:
+                return self._json(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {"code": -32700, "message": "parse error"},
+                    },
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            reply = handle_jsonrpc(console, body, client="mcp")
+            if reply is None:
+                # Notifications and responses: accepted, nothing to say.
+                return self._raw(HTTPStatus.ACCEPTED, b"", "application/json")
+            return self._json(reply)
+
         def _events(self, run_id: str, query: dict[str, str]) -> None:
             watcher = console.watcher(run_id)
             after = int(query.get("after", 0) or 0)
@@ -621,6 +841,7 @@ def serve(
     token: str | None = None,
     allow_unauthenticated: bool = False,
     env_file: str | None = ".env",
+    run_scope: str | None = None,
 ) -> ThreadingHTTPServer:
     """Build the console server.
 
@@ -643,6 +864,7 @@ def serve(
         output_root=output_root,
         default_config=default_config,
         ui_dist=ui_dist if ui_dist is not None else default_ui_dist(project_root),
+        run_scope=run_scope,
     )
     console.token = token.encode("utf-8") if token else None
     console.env_file = env_file

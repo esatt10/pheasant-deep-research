@@ -236,6 +236,7 @@ configs/pricing.yaml
 .env
 .env.*
 !.env.example
+!.env.docker.example
 
 # uv
 .venv/
@@ -244,3 +245,7 @@ configs/pricing.yaml
 ui/node_modules/
 ui/dist/
 ui/*.tsbuildinfo
+
+# Console-written local files (topics, connections, prices) and stored tokens.
+configs/*.local.yaml
+configs/.secrets*

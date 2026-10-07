@@ -1,5 +1,11 @@
 import type {
   AuditRow,
+  Budget,
+  Catalog,
+  CatalogField,
+  Connection,
+  Prices,
+  Settings,
   ConfigRow,
   Launch,
   LogInventory,
@@ -95,7 +101,13 @@ async function request<T>(path: string, init?: RequestInit & { quiet?: boolean }
   try {
     response = await fetch(`/api${path}`, {
       ...rest,
-      headers: { "Content-Type": "application/json", ...authHeaders(), ...(rest.headers ?? {}) },
+      headers: {
+        "Content-Type": "application/json",
+        // Who changed the shared settings draft is recorded; MCP says "mcp".
+        "X-Pheasant-Lab-Client": "ui",
+        ...authHeaders(),
+        ...(rest.headers ?? {}),
+      },
     });
   } finally {
     if (!quiet) track(-1);
@@ -117,6 +129,21 @@ const post = <T,>(path: string, body: unknown) =>
   request<T>(path, { method: "POST", body: JSON.stringify(body) });
 
 const quiet = <T,>(path: string) => request<T>(path, { quiet: true });
+
+const put = <T,>(path: string, body: unknown) =>
+  request<T>(path, { method: "PUT", body: JSON.stringify(body) });
+
+const del = <T,>(path: string) => request<T>(path, { method: "DELETE" });
+
+export interface SettingsPatch {
+  set?: Record<string, unknown>;
+  unset?: string[];
+  config?: string;
+  topic?: string | null;
+  connection?: string | null;
+  launch?: { max_cost_usd?: number | null; label?: string | null };
+  strict?: boolean;
+}
 
 export interface ConfigRequest {
   config: string;
@@ -154,7 +181,15 @@ export const api = {
     request<TopicList>(
       `/topics?config=${encodeURIComponent(config)}${set.map((s) => `&set=${encodeURIComponent(s)}`).join("")}`,
     ),
-  draftTopic: (body: Omit<ConfigRequest, "topic"> & { intent: string; seed_terms?: string[] }) =>
+  draftTopic: (
+    body: Omit<ConfigRequest, "topic"> & {
+      intent: string;
+      seed_terms?: string[];
+      model?: string;
+      reasoning_effort?: string;
+      context?: Record<string, unknown>;
+    },
+  ) =>
     post<TopicDraft>("/topics/draft", body),
   addTopic: (body: Omit<ConfigRequest, "topic"> & { topic: TopicDoc; replace?: boolean }) =>
     post<{ topic: TopicDoc; replaced: boolean; topics_file: string; override: string; count: number }>("/topics", body),
@@ -179,6 +214,39 @@ export const api = {
   previewRetention: (policy: Partial<RetentionPolicy>) =>
     post<{ plan: RetentionAction[] }>("/logs/retention/preview", { policy }),
   applyRetention: () => post<{ applied: RetentionAction[] }>("/logs/retention/apply", {}),
+  // The shared settings draft (the same one the MCP tools edit).
+  settings: () => quiet<Settings>("/settings"),
+  updateSettings: (patch: SettingsPatch) => put<Settings>("/settings", patch),
+  resetSettings: () => post<Settings>("/settings/reset", {}),
+  catalog: () => request<Catalog>("/settings/catalog"),
+  describe: (key: string) => request<CatalogField>(`/settings/catalog?key=${encodeURIComponent(key)}`),
+  draftPlan: () =>
+    quiet<{ exit_code: number; output: string; projection: Record<string, number | string | boolean> | null }>("/plan"),
+  budget: () => request<Budget>("/budget"),
+  setBudget: (body: Partial<Budget> & { launch_max_cost_usd?: number | null }) => put<Budget>("/budget", body),
+  setRoleModel: (role: string, body: { provider?: string; model?: string; reasoning_effort?: string | null; max_output_tokens?: number }) =>
+    put<Settings>(`/models/${role}`, body),
+  recommendedModels: (roles?: string[]) => post<Settings>("/models/recommended", { roles }),
+  prices: () => request<Prices>("/prices"),
+  setPrice: (model: string, input: number, output: number) =>
+    put<Prices>(`/prices/${encodeURIComponent(model)}`, { input, output }),
+  deletePrice: (model: string) => del<Prices>(`/prices/${encodeURIComponent(model)}`),
+  connections: () => request<{ connections: Connection[]; selected: string | null }>("/connections"),
+  saveConnection: (connection: Partial<Connection> & { name: string }, token?: string) =>
+    post<Connection>("/connections", { connection, ...(token !== undefined ? { token } : {}) }),
+  deleteConnection: (name: string) => del<{ deleted: string }>(`/connections/${encodeURIComponent(name)}`),
+  selectConnection: (name: string | null) => post<Settings>("/connections/select", { name }),
+  probeConnection: (name: string) => request<RegionProbe>(`/connections/${encodeURIComponent(name)}/probe`),
+  selectTopic: (topic: string | null) => post<Settings>("/topics/select", { topic }),
+  deleteTopic: (topic: string) =>
+    del<{ deleted: string; topics_file: string; override: string; count: number }>(`/topics/${encodeURIComponent(topic)}`),
+  launchDraft: (body: { kind: string; label?: string; run_id?: string; max_cost_usd?: number | null }) =>
+    post<Launch>("/runs/launch", body),
+  resumeRun: (runId: string) => post<Launch>(`/runs/${runId}/resume`, {}),
+  updateRun: (runId: string, body: { label?: string | null; notes?: string | null; keep?: boolean }) =>
+    put<RunRow>(`/runs/${runId}`, body),
+  generateReports: (runId: string) => post<Launch>(`/runs/${runId}/reports`, {}),
+  deleteReports: (runId: string) => del<AuditRow>(`/runs/${runId}/reports`),
   region: (config?: string) =>
     quiet<RegionProbe>(`/region${config ? `?config=${encodeURIComponent(config)}` : ""}`),
 };

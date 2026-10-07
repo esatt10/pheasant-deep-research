@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from ..lifecycle import durable_write_text
+from .projection import in_scope
 
 #: Directory names inside a run, mapped to how a person thinks about them.
 CATEGORIES: dict[str, str] = {
@@ -104,9 +105,11 @@ class RetentionPolicy:
 class LogControl:
     """Inventory, reading, deletion and retention over one output root."""
 
-    def __init__(self, output_root: Path, launcher: Any) -> None:
+    def __init__(self, output_root: Path, launcher: Any, *, scope: str | None = None) -> None:
         self.output_root = output_root
         self.launcher = launcher
+        #: Only runs made in this deployment are listed, read or deleted.
+        self.scope = scope
         self.home = output_root / ".console"
         self.policy_path = self.home / "retention.json"
         self.audit_path = self.home / "retention-log.jsonl"
@@ -231,6 +234,21 @@ class LogControl:
             shutil.rmtree(projections)
         return self._audit("projection", run_id, freed, reason)
 
+    def drop_reports(self, run_id: str, *, reason: str = "by hand") -> dict[str, Any]:
+        """Delete a run's rendered reports; ``pheasant-lab report`` renders them again.
+
+        Reports are derived from the raw trace like the projection, so they
+        are deletable where the trace is not (rule 5).
+        """
+
+        run = self._run_dir(run_id)
+        self._refuse_live(run_id)
+        reports = run / "reports"
+        freed = _tree_size(reports) if reports.is_dir() else 0
+        if reports.is_dir():
+            shutil.rmtree(reports)
+        return self._audit("reports", run_id, freed, reason)
+
     # -- retention ---------------------------------------------------------
     def plan(
         self, policy: RetentionPolicy | None = None, *, now: float | None = None
@@ -328,14 +346,14 @@ class LogControl:
         return [
             path
             for path in self.output_root.iterdir()
-            if path.is_dir() and path.name.startswith("run-")
+            if path.is_dir() and path.name.startswith("run-") and in_scope(path, self.scope)
         ]
 
     def _run_dir(self, run_id: str) -> Path:
         run = (self.output_root / run_id).resolve()
         if run.parent != self.output_root.resolve() or not run.name.startswith("run-"):
             raise KeyError(run_id)
-        if not run.is_dir():
+        if not run.is_dir() or not in_scope(run, self.scope):
             raise KeyError(run_id)
         return run
 

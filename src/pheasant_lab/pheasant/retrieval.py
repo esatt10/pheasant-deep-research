@@ -77,6 +77,8 @@ class SearchRequest:
     #: The region's graph expansion, as ``replay.graph_expansion`` spells it.
     #: Sent only when the argument map names ``expand``, like the pin.
     expand: Any = None
+    #: ``replay.min_score``: sent only when set and when the map names it.
+    min_score: float | None = None
 
     @property
     def search_request_id(self) -> str:
@@ -121,6 +123,8 @@ class SearchRequest:
             arguments[argument_map["as_of"]] = self.as_of
         if self.expand_sent(argument_map):
             arguments[argument_map["expand"]] = self.expand
+        if self.min_score is not None and "min_score" in argument_map:
+            arguments[argument_map["min_score"]] = self.min_score
         for key, value in self.filters.items():
             arguments[argument_map.get(key, key)] = value
         return arguments

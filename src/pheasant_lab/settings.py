@@ -199,6 +199,22 @@ class ReplaySection(_Model):
     #: an answerer sees. Sent only when the pheasant file maps ``expand``, and
     #: ``doctor`` refuses a run that asks for it without that mapping.
     graph_expansion: bool | int | dict[str, Any] | None = None
+    #: Which of the region's retrieval arms answer an arm's search: ``hybrid``
+    #: (text + vector + graph fused by reciprocal rank, pheasant's default),
+    #: or one arm alone - ``text`` (BM25), ``vector`` or ``graph``. Unset
+    #: means ``hybrid`` and is left out of the config digest, so runs started
+    #: before the setting existed still resume.
+    search_mode: Literal["hybrid", "text", "vector", "graph"] | None = None
+    #: A floor on the region's fused score, sent as ``min_score`` only when it
+    #: is set *and* the pheasant file maps ``min_score``. Fused scores have no
+    #: absolute scale, so this is a blunt instrument; unset sends nothing.
+    min_score: float | None = None
+
+    @property
+    def wire_search_mode(self) -> str:
+        """The search mode on the wire: ``hybrid`` unless one arm was chosen."""
+
+        return self.search_mode or "hybrid"
 
     @field_validator("graph_expansion")
     @classmethod
@@ -669,6 +685,10 @@ class Topic(_Model):
     #: left out of the config digest while unset, so topics written before it
     #: existed keep their runs resumable.
     intent: str | None = None
+    #: Detail the person adds beyond the intent: background, what must be
+    #: included or left out, who the answer is for. The planner reads it
+    #: after the intent. Optional, and left out of the digest while unset.
+    details: str | None = None
     seed_terms: list[str] = Field(default_factory=list)
     date_range: DateRange = Field(default_factory=DateRange)
     facets: list[Facet] = Field(default_factory=list)
@@ -682,6 +702,8 @@ class Topic(_Model):
             )
         if self.intent is not None and not self.intent.strip():
             self.intent = None
+        if self.details is not None and not self.details.strip():
+            self.details = None
         return self
 
 
@@ -760,6 +782,10 @@ class LabConfig(_Model):
         # an `expand` mapping, which sends nothing until it is set - so a run
         # started before either existed still resumes without `--fork`.
         replay = payload.get("replay")
+        if isinstance(replay, dict):
+            for added in ("search_mode", "min_score"):
+                if replay.get(added) is None:
+                    replay.pop(added, None)
         if isinstance(replay, dict) and replay.get("graph_expansion") is None:
             replay.pop("graph_expansion", None)
             search_map = (payload.get("pheasant") or {}).get("argument_map", {}).get("search")
@@ -767,14 +793,31 @@ class LabConfig(_Model):
                 search_map.pop("expand", None)
         # A topic's intent arrived after topics did; unset, it is left out.
         for topic in payload.get("topics") or []:
-            if isinstance(topic, dict) and topic.get("intent") is None:
-                topic.pop("intent", None)
+            if isinstance(topic, dict):
+                for added in ("intent", "details"):
+                    if topic.get(added) is None:
+                        topic.pop(added, None)
         # Observational, not experimental: reading the index queue (or the
         # region's own inventory of the lab's source) changes what
         # the run *reports* about the pre-claim interval and nothing it
         # measures, and the mock's simulated claim delay changes when the
         # barrier crosses, not what it crosses with. Left out so a pheasant
         # file that gains them still resumes runs started before.
+        # A run is held to the prices of the models it uses, not to the whole
+        # list: a price added for a model no role names cannot change what the
+        # run spends or measures, and digesting it made every interrupted run
+        # unresumable whenever a new model was priced. Changing a used model's
+        # price still moves the digest, as does the list's `version` - bump it
+        # when a price changes, not when one is added. A list holding only
+        # used models digests exactly as it did before this filter existed.
+        pricing = payload.get("pricing")
+        if isinstance(pricing, dict):
+            used = {spec.model for spec in self.models.values()}
+            if self.proof.judging.enabled and self.proof.judging.model:
+                used.add(self.proof.judging.model)
+            pricing["models"] = {
+                name: price for name, price in (pricing.get("models") or {}).items() if name in used
+            }
         pheasant = payload.get("pheasant")
         if isinstance(pheasant, dict):
             capabilities = pheasant.get("capabilities")
@@ -897,6 +940,31 @@ def resolve_path(base: Path, candidate: str) -> Path:
     return path if path.is_absolute() else (base / path)
 
 
+#: Which file owns each ``--set`` head, derived from the file models so a
+#: section added to one of them is routable the day it exists.
+OVERRIDE_FILES: dict[str, str] = {
+    **dict.fromkeys(ExperimentFile.model_fields, "experiment"),
+    **dict.fromkeys(ModelsFile.model_fields, "models"),
+    **dict.fromkeys(MetricsFile.model_fields, "metrics"),
+    **dict.fromkeys(ProofPolicyFile.model_fields, "proof"),
+    **dict.fromkeys(PheasantFile.model_fields, "pheasant"),
+    **dict.fromkeys(LoggingFile.model_fields, "logging"),
+}
+
+
+def override_file(dotted: str) -> str:
+    """The configuration file an override ``a.b.c`` lands in, or a refusal."""
+
+    head = dotted.split(".", 1)[0]
+    try:
+        return OVERRIDE_FILES[head]
+    except KeyError:
+        raise ConfigError(
+            f"override '{dotted}' names no configuration section; '{head}' is not one of "
+            f"{sorted(OVERRIDE_FILES)}"
+        ) from None
+
+
 def load_config(
     config_path: str | Path,
     *,
@@ -920,10 +988,15 @@ def load_config(
     # An override is routed by its head key to the file that owns that
     # section. Applying every override to the experiment file first would make
     # `--set models.researcher.model=...` a validation error about an extra
-    # field, which tells the operator nothing about what they got wrong.
-    experiment_sections = set(ExperimentFile.model_fields)
+    # field, which tells the operator nothing about what they got wrong. A
+    # head no file owns is refused rather than dropped: an override nothing
+    # reads is a setting with no reader, and `budget.*`, `pricing.*`,
+    # `token_env` and `source_name` were exactly that until the routing was
+    # derived from the models instead of listed by hand.
+    for dotted in overrides or {}:
+        override_file(dotted)
     for dotted, value in (overrides or {}).items():
-        if dotted.split(".", 1)[0] in experiment_sections:
+        if override_file(dotted) == "experiment":
             apply_override(raw_experiment, dotted, value)
 
     experiment_file = ExperimentFile.model_validate(raw_experiment)
@@ -940,34 +1013,17 @@ def load_config(
     logging_path, raw_logging = _sibling(exp.logging_file)
     topics_path, raw_topics = _sibling(exp.topics_file)
 
+    targets = {
+        "models": raw_models,
+        "metrics": raw_metrics,
+        "proof": raw_proof,
+        "pheasant": raw_pheasant,
+        "logging": raw_logging,
+    }
     for dotted, value in (overrides or {}).items():
-        head = dotted.split(".", 1)[0]
-        if head == "models":
-            apply_override(raw_models, dotted, value)
-        elif head in {
-            "metrics",
-            "classification",
-            "statistics",
-            "gates",
-            "specialist_noninferiority",
-            "answer_matching",
-        }:
-            apply_override(raw_metrics, dotted, value)
-        elif head in {"proof", "judging"}:
-            apply_override(raw_proof, dotted, value)
-        elif head in {
-            "transport",
-            "url",
-            "capabilities",
-            "discovery",
-            "knowledge_base",
-            "isolation",
-            "argument_map",
-            "mock_claim_seconds",
-        }:
-            apply_override(raw_pheasant, dotted, value)
-        elif head in {"logging", "tracing", "projection", "export"}:
-            apply_override(raw_logging, dotted, value)
+        owner = override_file(dotted)
+        if owner in targets:
+            apply_override(targets[owner], dotted, value)
 
     models_file = ModelsFile.model_validate(raw_models)
     metrics_file = MetricsFile.model_validate(raw_metrics)

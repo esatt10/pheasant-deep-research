@@ -16,6 +16,20 @@ call rather than reconciling after.
 uv run pheasant-lab demo --config configs/demo.yaml   # offline, free, end to end
 ```
 
+Or in Docker, with a real Pheasant 0.13.5 region beside the console — the
+first run is still free (fixture literature, replay models) and every document
+is genuinely submitted, indexed and searched ([docs/docker.md](docs/docker.md)):
+
+```bash
+cp .env.docker.example .env        # two random keys
+docker compose up -d --build       # console: http://127.0.0.1:8770, MCP: /mcp
+```
+
+Everything a run can be given — search, budget, models and reasoning level per
+agent role, the Pheasant connection, topics — is configurable from the console,
+its HTTP API and its MCP tools, and every field explains itself
+([docs/mcp.md](docs/mcp.md)).
+
 ---
 
 ## What this repository is for

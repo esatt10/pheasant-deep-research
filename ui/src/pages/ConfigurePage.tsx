@@ -1,33 +1,31 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { api } from "../api";
+import { api, type SettingsPatch } from "../api";
 import { usePoll } from "../hooks/usePoll";
-import type { ConfigRow, Resolved } from "../types";
+import type { Catalog, CatalogField, ConfigRow, Settings } from "../types";
 import { armColor, usd } from "../format";
 import { Topics } from "../configure/Topics";
+import { SettingField, useDraftText, type Commit } from "../configure/fields";
+import { Connections } from "../configure/Connections";
+import { Budget } from "../configure/Budget";
+import { Models } from "../configure/Models";
 
 /**
- * A form over the lab's own YAML. Every change is a `--set a.b=value`, exactly
- * what the CLI takes, so a run started from this page is reproducible from a
- * terminal with the argv it shows. One exception, because a topic is content
- * rather than a setting: a new research topic is written to
- * `configs/topics.local.yaml`, and the run points at it with — again — a
- * `--set experiment.topics_file=...` (see configure/Topics.tsx).
+ * A form over the lab's own YAML, and over the one settings draft the console
+ * keeps - the same draft its MCP tools edit, so a change an agent makes is the
+ * change this page shows. Every change is still a `--set a.b=value`, exactly
+ * what the CLI takes, and the page shows the argv a launch would run.
+ *
+ * Every field is explained by the catalog the server derives from the
+ * configuration models (`?` beside each label): what it means, what it takes,
+ * its range and default, and - for the agent roles - the recommended model
+ * and reasoning level.
  */
 
 const PROFILES = [
   { key: "scholarly", title: "scholarly", body: "OpenAlex · Crossref · arXiv · PubMed", note: "authoritative = peer-reviewed" },
   { key: "web", title: "web", body: "Brave · Tavily", note: "authoritative = a primary statement, filing or posting" },
   { key: "balanced", title: "balanced", body: "scholarly + web, capped per provider", note: "peer-reviewed or primary" },
-];
-
-const LIMITS: { path: string; label: string; hint?: string }[] = [
-  { path: "collection.max_research_agents", label: "max_research_agents" },
-  { path: "collection.max_concurrent_agents", label: "max_concurrent_agents" },
-  { path: "collection.max_search_rounds_per_agent", label: "max_search_rounds_per_agent" },
-  { path: "collection.max_sources_per_subtopic", label: "max_sources_per_subtopic" },
-  { path: "collection.max_depth", label: "max_depth" },
-  { path: "experiment.cost_budget_usd", label: "cost_budget_usd", hint: "reserved before every call" },
 ];
 
 const ARMS = [
@@ -38,111 +36,129 @@ const ARMS = [
   { id: "P2", text: "tuned-search replay" },
 ];
 
-// The page's own edits, per tab: a reload keeps the overrides (including the
-// one that points at a topic you just added) instead of quietly dropping them.
-const DRAFT_KEY = "pheasant-lab-configure-draft";
+const COLLECTION_KEYS = [
+  "collection.max_research_agents",
+  "collection.max_concurrent_agents",
+  "collection.max_search_rounds_per_agent",
+  "collection.max_sources_per_subtopic",
+  "collection.max_depth",
+  "collection.providers",
+];
 
-interface Draft {
-  config?: string;
-  overrides: Record<string, string>;
-  topic?: string;
+/** The shared draft: read, polled, and changed through one function. */
+function useSettings() {
+  const [settings, setSettings] = useState<Settings>();
+  const [error, setError] = useState<string | null>(null);
+  const inflight = useRef(0);
+  const revision = useRef(-1);
+
+  const adopt = useCallback((next: Settings) => {
+    revision.current = next.draft.revision;
+    setSettings(next);
+  }, []);
+
+  const refresh = useCallback(async () => {
+    if (inflight.current) return;
+    try {
+      const next = await api.settings();
+      // Adopt another surface's change (an MCP tool, another tab) only when
+      // nothing of ours is on its way: our own reply is newer.
+      if (!inflight.current && next.draft.revision !== revision.current) adopt(next);
+    } catch {
+      /* the next poll tries again */
+    }
+  }, [adopt]);
+
+  useEffect(() => {
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 3000);
+    return () => window.clearInterval(timer);
+  }, [refresh]);
+
+  const update = useCallback(
+    async (patch: SettingsPatch) => {
+      inflight.current += 1;
+      try {
+        adopt(await api.updateSettings(patch));
+        setError(null);
+      } catch (caught) {
+        setError((caught as Error).message);
+      } finally {
+        inflight.current -= 1;
+      }
+    },
+    [adopt],
+  );
+
+  return { settings, setSettings: adopt, update, error, setError, refresh };
 }
 
-function loadDraft(config?: string): Draft {
-  try {
-    const saved = JSON.parse(sessionStorage.getItem(DRAFT_KEY) ?? "null") as Draft | null;
-    if (saved && (!config || saved.config === config)) return saved;
-  } catch {
-    /* storage unavailable or corrupt */
-  }
-  return { overrides: {} };
-}
-
-function read(tree: Record<string, any> | undefined, path: string): unknown {
-  return path.split(".").reduce<any>((node, key) => (node == null ? undefined : node[key]), tree);
-}
-
-export function ConfigurePage({ config, onConfig }: { config?: string; onConfig: (c: string) => void }) {
+export function ConfigurePage({ onConfig }: { config?: string; onConfig: (c: string) => void }) {
   const navigate = useNavigate();
   const location = useLocation();
   const configs = usePoll<ConfigRow[]>(api.configs, 60000);
-  const selected = config ?? configs.data?.find((c) => c.default)?.path;
-  const [draft] = useState(() => loadDraft(config));
-  const [overrides, setOverrides] = useState<Record<string, string>>(draft.overrides);
-  const [topic, setTopic] = useState<string | undefined>(draft.topic);
-  const [resolved, setResolved] = useState<Resolved>();
-  const [base, setBase] = useState<Resolved>();
-  const [error, setError] = useState<string | null>(null);
+  const { settings, setSettings, update, error, setError } = useSettings();
+  const [catalog, setCatalog] = useState<Catalog>();
   const [plan, setPlan] = useState<Record<string, any> | null>(null);
   const [doctor, setDoctor] = useState<{ exit_code: number; output: string } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [filter, setFilter] = useState("");
+  const [section, setSection] = useState("all");
+  const [advanced, setAdvanced] = useState(false);
+
+  const draft = settings?.draft;
+  const resolved = settings?.resolved ?? undefined;
+  const values = resolved?.values ?? {};
+  const overrides = draft?.overrides ?? {};
+  const selected = draft?.config;
+  const set = useMemo(() => Object.entries(overrides).map(([k, v]) => `${k}=${v}`), [overrides]);
 
   useEffect(() => {
-    // A draft made against another config file does not apply to this one.
-    if (selected && draft.config && draft.config !== selected) {
-      setOverrides({});
-      setTopic(undefined);
-    }
+    if (selected) onConfig(selected);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
 
   useEffect(() => {
     if (!selected) return;
-    try {
-      sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ config: selected, overrides, topic }));
-    } catch {
-      /* storage unavailable */
-    }
-  }, [selected, overrides, topic]);
-
-  const set = useMemo(() => Object.entries(overrides).map(([k, v]) => `${k}=${v}`), [overrides]);
-
-  useEffect(() => {
-    if (!selected) return;
-    void api.resolve({ config: selected, set: [] }).then(setBase).catch(() => undefined);
+    void api.catalog().then(setCatalog).catch(() => undefined);
   }, [selected]);
 
+  // The plan follows the draft, after it settles.
   useEffect(() => {
-    if (!selected) return;
-    const handle = window.setTimeout(async () => {
-      try {
-        const next = await api.resolve({ config: selected, set });
-        setResolved(next);
-        setError(null);
-        const projected = await api.plan({ config: selected, set, topic });
-        setPlan(projected.projection);
-      } catch (caught) {
-        setError((caught as Error).message);
-      }
-    }, 350);
+    if (!draft) return;
+    const handle = window.setTimeout(() => {
+      void api
+        .draftPlan()
+        .then((projected) => setPlan(projected.projection))
+        .catch(() => setPlan(null));
+    }, 500);
     return () => window.clearTimeout(handle);
-  }, [selected, set, topic]);
-
-  const change = (path: string, value: string | null) =>
-    setOverrides((current) => {
-      const next = { ...current };
-      if (value === null || value === "") delete next[path];
-      else next[path] = value;
-      return next;
-    });
+  }, [draft?.revision]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // `/configure#run-logging` (the Logs page links here): scroll once the card exists.
   useEffect(() => {
     if (!location.hash || !resolved) return;
     document.getElementById(location.hash.slice(1))?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }, [location.hash, resolved]);
+  }, [location.hash, !!resolved]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const tree = resolved?.resolved;
-  const profile = String(read(tree, "collection.profile") ?? "scholarly");
-  const arms = (read(tree, "arms") as string[] | undefined) ?? [];
+  const commit: Commit = useCallback((key, value) => void update({ set: { [key]: value } }), [update]);
+  const fields = useMemo(() => new Map((catalog?.fields ?? []).map((f) => [f.key, f])), [catalog]);
+  const field = (key: string) => fields.get(key);
+  const valueOf = (key: string) => (key in values ? values[key] : field(key)?.current);
+  const render = (key: string, compact = false) => {
+    const f = field(key);
+    if (!f) return null;
+    return <SettingField key={key} field={f} value={valueOf(key)} overridden={key in overrides} onCommit={commit} compact={compact} />;
+  };
+
+  const profile = String(valueOf("collection.profile") ?? "scholarly");
+  const arms = (valueOf("arms") as string[] | undefined) ?? [];
   const pheasant = resolved?.pheasant;
-  const isMock = pheasant?.transport === "mock";
 
   const launch = async (kind: "demo" | "pipeline") => {
-    if (!selected) return;
     setBusy(kind);
     try {
-      const started = await api.launch({ kind, config: selected, set, topic });
+      const started = await api.launchDraft({ kind, label: draft?.launch.label ?? undefined });
       for (let attempt = 0; attempt < 60; attempt += 1) {
         const row = (await api.launches()).find((l) => l.launch_id === started.launch_id);
         if (row?.run_id) return navigate(`/live/${row.run_id}`);
@@ -167,13 +183,42 @@ export function ConfigurePage({ config, onConfig }: { config?: string; onConfig:
     }
   };
 
+  const shownFields = (catalog?.fields ?? []).filter((f) => {
+    if (!advanced && f.advanced && !(f.key in overrides)) return false;
+    if (section !== "all" && f.section !== section) return false;
+    if (filter) {
+      const needle = filter.toLowerCase();
+      return (f.key + " " + f.label + " " + f.help).toLowerCase().includes(needle);
+    }
+    return true;
+  });
+  const grouped = new Map<string, CatalogField[]>();
+  for (const f of shownFields) grouped.set(f.section, [...(grouped.get(f.section) ?? []), f]);
+
+  const refusal = error ?? (settings && !settings.valid ? settings.error : null);
+
   return (
-    <div className="page page--fit" style={{ maxWidth: 1400 }}>
+    <div className="page page--fit" style={{ maxWidth: 1440 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <h1>Configure</h1>
-        <span className="muted">a form over the YAML — every change is a <code>--set</code></span>
+        <span className="muted">
+          one settings draft, shared with the MCP tools — every change is a <code>--set</code>
+        </span>
+        {draft?.updated_by && draft.updated_by !== "ui" ? (
+          <span className="pill pill--info" title="This draft was last changed outside this page">
+            last changed via {draft.updated_by}
+          </span>
+        ) : null}
       </div>
-      {error ? <div className="toast toast--danger" style={{ boxShadow: "none" }}><span className="toast__icon">!</span><div><b>Refused</b><span className="soft">{error}</span></div></div> : null}
+      {refusal ? (
+        <div className="toast toast--danger" style={{ boxShadow: "none" }}>
+          <span className="toast__icon">!</span>
+          <div>
+            <b>{settings && !settings.valid ? "This draft does not resolve" : "Refused"}</b>
+            <span className="soft">{refusal}</span>
+          </div>
+        </div>
+      ) : null}
       <div className="cfg">
         <div className="fit-scroll" style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 0 }}>
           <div className="card">
@@ -181,25 +226,36 @@ export function ConfigurePage({ config, onConfig }: { config?: string; onConfig:
             <div className="card__body grid3">
               <div className="fld">
                 <label>config file</label>
-                <select className="input" value={selected ?? ""} onChange={(e) => { onConfig(e.target.value); setOverrides({}); setTopic(undefined); }}>
+                <select
+                  className="input"
+                  value={selected ?? ""}
+                  onChange={(e) => void update({ config: e.target.value })}
+                >
                   {(configs.data ?? []).map((c) => (
-                    <option key={c.path} value={c.path}>{c.path}</option>
+                    <option key={c.path} value={c.path}>
+                      {c.path}
+                    </option>
                   ))}
                 </select>
+                <div className="h">switching file clears this draft's overrides</div>
               </div>
+              {render("experiment.name")}
+              <RunLabel value={draft?.launch.label ?? ""} onCommit={(label) => void update({ launch: { label: label || null } })} />
+              {render("experiment.seed", true)}
               <div className="fld">
                 <label>topic</label>
-                <select className="input" value={topic ?? ""} onChange={(e) => setTopic(e.target.value || undefined)}>
+                <select
+                  className="input"
+                  value={draft?.topic ?? ""}
+                  onChange={(e) => void update({ topic: e.target.value || null })}
+                >
                   <option value="">first in topics file</option>
                   {(resolved?.topics ?? []).map((t) => (
-                    <option key={t.id} value={t.id}>{t.title}</option>
+                    <option key={t.id} value={t.id}>
+                      {t.title}
+                    </option>
                   ))}
                 </select>
-              </div>
-              <div className="fld">
-                <label>experiment.name</label>
-                <input className="input" value={String(read(tree, "experiment.name") ?? "")} readOnly />
-                <div className="h">seed {String(read(tree, "experiment.seed") ?? "—")}</div>
               </div>
             </div>
           </div>
@@ -208,60 +264,80 @@ export function ConfigurePage({ config, onConfig }: { config?: string; onConfig:
             <Topics
               config={selected}
               set={set}
-              selected={topic}
-              onSelect={setTopic}
+              selected={draft?.topic ?? undefined}
+              draftModels={catalog?.draft_models ?? []}
+              onSelect={(topicId) => void update({ topic: topicId ?? null })}
               onSaved={(override, topicId) => {
                 const [path, value] = override.split("=", 2);
-                change(path, value);
-                setTopic(topicId);
+                void update({ set: { [path]: value }, topic: topicId });
+              }}
+              onDeleted={(override, topicId) => {
+                const [path, value] = override.split("=", 2);
+                void update({ set: { [path]: value }, ...(draft?.topic === topicId ? { topic: null } : {}) });
               }}
             />
           ) : null}
 
+          <Connections
+            selected={draft?.connection ?? null}
+            pheasant={pheasant}
+            onSelected={setSettings}
+            render={render}
+          />
+
+          <Budget
+            render={render}
+            launchCap={draft?.launch.max_cost_usd ?? null}
+            allocation={["planning", "collection", "benchmark", "evaluation", "reserve"].map((k) => Number(valueOf(`budget.allocation.${k}`) ?? 0))}
+            onLaunchCap={(cap) => void update({ launch: { max_cost_usd: cap } })}
+          />
+
+          <div className="card" id="search">
+            <div className="card__head">
+              Pheasant search <span className="sub">what every Pheasant arm's search asks the region for</span>
+            </div>
+            <div className="card__body grid3">
+              {(catalog?.fields ?? []).filter((f) => f.section === "search").map((f) => render(f.key))}
+            </div>
+          </div>
+
+          <Models
+            catalog={catalog}
+            values={values}
+            overrides={overrides}
+            onCommit={commit}
+            onSettings={setSettings}
+            onError={setError}
+          />
+
           <div className="card">
-            <div className="card__head">Collection profile <span className="sub">supplies defaults, never overrides: keys you set stay set</span></div>
+            <div className="card__head">
+              Collection profile <span className="sub">supplies defaults, never overrides: keys you set stay set</span>
+            </div>
             <div className="card__body grid3">
               {PROFILES.map((p) => (
                 <button
                   key={p.key}
                   className={`prof${profile === p.key ? " prof--on" : ""}`}
-                  onClick={() => change("collection.profile", base && read(base.resolved, "collection.profile") === p.key ? null : p.key)}
+                  onClick={() => commit("collection.profile", profile === p.key && "collection.profile" in overrides ? null : p.key)}
                 >
                   <b>{p.title}</b>
                   {p.body}
-                  <div className="muted" style={{ marginTop: 4 }}>{p.note}</div>
+                  <div className="muted" style={{ marginTop: 4 }}>
+                    {p.note}
+                  </div>
                 </button>
               ))}
             </div>
             <div className="card__body grid3" style={{ paddingTop: 0 }}>
-              {LIMITS.map((field) => {
-                const isSet = field.path in overrides;
-                return (
-                  <div key={field.path} className={`fld${isSet ? " fld--set" : ""}`}>
-                    <label>{field.label}</label>
-                    <input
-                      className="input"
-                      type="number"
-                      value={isSet ? overrides[field.path] : String(read(tree, field.path) ?? "")}
-                      onChange={(e) => change(field.path, e.target.value)}
-                    />
-                    <div className="h">
-                      {isSet ? (
-                        <button className="btn btn--ghost btn--small" style={{ padding: 0 }} onClick={() => change(field.path, null)}>
-                          set by you · reset
-                        </button>
-                      ) : (
-                        field.hint ?? "from the file or the profile"
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
+              {COLLECTION_KEYS.map((key) => render(key))}
             </div>
           </div>
 
           <div className="card">
-            <div className="card__head">Arms <span className="sub">isolation is enforced in <code>arms/base.py</code>; this chooses which run</span></div>
+            <div className="card__head">
+              Arms <span className="sub">isolation is enforced in <code>arms/base.py</code>; this chooses which run</span>
+            </div>
             <div className="card__body" style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8 }}>
               {ARMS.map((arm) => {
                 const on = arms.includes(arm.id);
@@ -271,69 +347,96 @@ export function ConfigurePage({ config, onConfig }: { config?: string; onConfig:
                     className={`armc${on ? "" : " armc--off"}`}
                     onClick={() => {
                       const next = on ? arms.filter((a) => a !== arm.id) : [...arms, arm.id];
-                      const order = ARMS.map((a) => a.id).filter((id) => next.includes(id));
-                      change("arms", `[${order.join(",")}]`);
+                      commit("arms", ARMS.map((a) => a.id).filter((id) => next.includes(id)));
                     }}
                   >
                     <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <span className="pill" style={{ color: armColor(arm.id) }}>{arm.id}</span>
-                      <span className="muted" style={{ marginLeft: "auto" }}>{on ? "on" : "off"}</span>
+                      <span className="pill" style={{ color: armColor(arm.id) }}>
+                        {arm.id}
+                      </span>
+                      <span className="muted" style={{ marginLeft: "auto" }}>
+                        {on ? "on" : "off"}
+                      </span>
                     </span>
                     {arm.text}
                   </button>
                 );
               })}
             </div>
+            <div className="card__body grid3" style={{ paddingTop: 0 }}>
+              {render("replay.repetitions")}
+              {render("replay.pairing_policy")}
+              {render("benchmark.questions_per_topic")}
+            </div>
           </div>
 
-          <RunLogging tree={tree} overrides={overrides} change={change} source={resolved?.source_files?.logging} />
-
-          <div className="card">
+          <div className="card" id="run-logging">
             <div className="card__head">
-              Pheasant region <span className="sub mono">{resolved?.source_files?.pheasant?.split("/").slice(-2).join("/")}</span>
+              Run logging <span className="sub mono">{resolved?.source_files?.logging?.split("/").slice(-2).join("/")}</span>
+              <div className="r">
+                <Link className="btn btn--ghost btn--small" to="/logs" style={{ textDecoration: "none" }}>
+                  Retention & deletion →
+                </Link>
+              </div>
             </div>
             <div className="card__body grid3">
-              <div className="fld"><label>transport · endpoint</label><input className="input mono" readOnly value={isMock ? "mock (in-process)" : `${pheasant?.transport ?? ""} ${pheasant?.url ?? ""}`} /></div>
-              <div className="fld"><label>knowledge_base</label><input className="input" readOnly value={pheasant?.knowledge_base ?? ""} /></div>
-              <div className="fld"><label>source_name</label><input className="input" readOnly value={pheasant?.source_name ?? ""} /></div>
-              {isMock ? (
-                <div className={`fld${"mock_claim_seconds" in overrides ? " fld--set" : ""}`}>
-                  <label>mock_claim_seconds</label>
-                  <input
-                    className="input"
-                    type="number"
-                    step="0.5"
-                    value={overrides.mock_claim_seconds ?? String(pheasant?.mock_claim_seconds ?? 0)}
-                    onChange={(e) => change("mock_claim_seconds", e.target.value === "0" ? null : e.target.value)}
-                  />
-                  <div className="h">above 0: behave like a fleet — syncs are queued, then claimed</div>
-                </div>
-              ) : null}
+              {render("logging.level")}
+              {render("logging.format")}
+              {render("logging.file")}
+              {render("tracing.mcp_transcript.store_request_body")}
+              {render("tracing.mcp_transcript.store_response_body")}
+              {render("tracing.mcp_transcript.max_body_bytes")}
             </div>
-            <div style={{ padding: "0 14px 12px" }}>
-              <table className="table">
-                <thead><tr><th>capability</th><th>tool</th><th>required</th></tr></thead>
-                <tbody>
-                  {Object.entries(pheasant?.capabilities ?? {}).map(([name, spec]) => (
-                    <tr key={name}>
-                      <td>{name}</td>
-                      <td className="mono">{spec.tool}</td>
-                      <td>{spec.required ? <span className="pill pill--accent">required</span> : <span className="pill">optional</span>}</td>
-                    </tr>
+          </div>
+
+          <div className="card" id="all-settings">
+            <div className="card__head">
+              Every setting <span className="sub">{shownFields.length} of {catalog?.fields.length ?? 0} · each one explained</span>
+              <div className="r" style={{ gap: 6 }}>
+                <input
+                  className="input"
+                  style={{ width: 180 }}
+                  placeholder="filter: key, word…"
+                  value={filter}
+                  onChange={(e) => setFilter(e.target.value)}
+                  aria-label="Filter settings"
+                />
+                <select className="input" style={{ width: 160 }} value={section} onChange={(e) => setSection(e.target.value)} aria-label="Section">
+                  <option value="all">all sections</option>
+                  {(catalog?.sections ?? []).map((s) => (
+                    <option key={s.key} value={s.key}>
+                      {s.title}
+                    </option>
                   ))}
-                </tbody>
-              </table>
+                </select>
+                <button className={`btn btn--small${advanced ? " btn--primary" : ""}`} onClick={() => setAdvanced((v) => !v)} aria-pressed={advanced}>
+                  advanced
+                </button>
+              </div>
             </div>
+            {[...grouped.entries()].map(([key, rows]) => {
+              const meta = catalog?.sections.find((s) => s.key === key);
+              return (
+                <div key={key} className="card__body" style={{ borderTop: "1px solid var(--border)" }}>
+                  <div className="eyebrow" style={{ marginBottom: 6 }}>
+                    {meta?.title ?? key} <span className="muted" style={{ textTransform: "none", letterSpacing: 0 }}>· {meta?.blurb}</span>
+                  </div>
+                  <div className="grid3">{rows.map((f) => render(f.key))}</div>
+                </div>
+              );
+            })}
           </div>
         </div>
 
         <div className="sticky fit-scroll">
           <div className="card">
-            <div className="card__head">Plan <span className="sub">worst case, no model or ingest call</span></div>
+            <div className="card__head">
+              Plan <span className="sub">worst case, no model or ingest call</span>
+            </div>
             <div className="card__body">
               <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
                 <span style={{ fontSize: 26, fontWeight: 700, letterSpacing: "-0.02em" }}>{usd(Number(plan?.projected_total_usd ?? 0))}</span>
-                <span className="muted">of {usd(Number(plan?.budget_usd ?? read(tree, "experiment.cost_budget_usd") ?? 0))}</span>
+                <span className="muted">of {usd(Number(plan?.budget_usd ?? valueOf("experiment.cost_budget_usd") ?? 0))}</span>
                 {plan ? (
                   <span className={`pill ${plan.fits_budget ? "pill--accent" : "pill--danger"}`} style={{ marginLeft: "auto" }}>
                     {plan.fits_budget ? "fits" : "over budget"}
@@ -342,15 +445,40 @@ export function ConfigurePage({ config, onConfig }: { config?: string; onConfig:
               </div>
               {plan ? (
                 <dl className="kv" style={{ marginTop: 8 }}>
-                  <dt>planning</dt><dd>{usd(Number(plan.planning_usd), 4)}</dd>
-                  <dt>collection</dt><dd>{usd(Number(plan.collection_usd), 4)} + search APIs {usd(Number(plan.search_api_usd), 4)}</dd>
-                  <dt>benchmark</dt><dd>{usd(Number(plan.benchmark_usd), 4)}</dd>
-                  <dt>evaluation</dt><dd>{usd(Number(plan.evaluation_usd), 4)}</dd>
-                  <dt>volume</dt><dd>{String(plan.searches)} provider searches · {String(plan.questions)} questions · {String(plan.answers)} answers · {String(plan.mcp_search_calls)} MCP searches</dd>
+                  <dt>planning</dt>
+                  <dd>{usd(Number(plan.planning_usd), 4)}</dd>
+                  <dt>collection</dt>
+                  <dd>
+                    {usd(Number(plan.collection_usd), 4)} + search APIs {usd(Number(plan.search_api_usd), 4)}
+                  </dd>
+                  <dt>benchmark</dt>
+                  <dd>{usd(Number(plan.benchmark_usd), 4)}</dd>
+                  <dt>evaluation</dt>
+                  <dd>{usd(Number(plan.evaluation_usd), 4)}</dd>
+                  <dt>volume</dt>
+                  <dd>
+                    {String(plan.searches)} provider searches · {String(plan.questions)} questions · {String(plan.answers)} answers ·{" "}
+                    {String(plan.mcp_search_calls)} MCP searches
+                  </dd>
                 </dl>
-              ) : <span className="muted">projecting…</span>}
+              ) : (
+                <span className="muted">{settings && !settings.valid ? "fix the draft to project its cost" : "projecting…"}</span>
+              )}
             </div>
           </div>
+
+          {resolved?.advice?.length ? (
+            <div className="card">
+              <div className="card__head">Advice</div>
+              <div className="card__body" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {resolved.advice.map((row) => (
+                  <div key={row.key + row.message} className={`pill ${row.level === "warn" ? "pill--warn" : "pill--info"}`} style={{ whiteSpace: "normal" }}>
+                    {row.message}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           <div className="card">
             <div className="card__head">
@@ -364,13 +492,13 @@ export function ConfigurePage({ config, onConfig }: { config?: string; onConfig:
             <div className="card__body">
               {doctor ? (
                 <>
-                  <span className={`pill ${doctor.exit_code === 0 ? "pill--accent" : "pill--danger"}`}>
-                    {doctor.exit_code === 0 ? "PASS" : "FAIL"}
-                  </span>
-                  <pre className="yaml" style={{ marginTop: 8 }}>{doctor.output.trim()}</pre>
+                  <span className={`pill ${doctor.exit_code === 0 ? "pill--accent" : "pill--danger"}`}>{doctor.exit_code === 0 ? "PASS" : "FAIL"}</span>
+                  <pre className="yaml" style={{ marginTop: 8 }}>
+                    {doctor.output.trim()}
+                  </pre>
                 </>
               ) : (
-                <span className="muted">Checks models, providers, the region's tools and every mapped argument against its schema.</span>
+                <span className="muted">Checks models, prices, providers, the region's tools and every mapped argument against its schema.</span>
               )}
             </div>
           </div>
@@ -379,21 +507,20 @@ export function ConfigurePage({ config, onConfig }: { config?: string; onConfig:
             <div className="card__head">
               Resolved <span className="sub">{Object.keys(overrides).length} override(s)</span>
               <div className="r">
-                {Object.keys(overrides).length || topic ? (
-                  <button className="btn btn--ghost btn--small" onClick={() => { setOverrides({}); setTopic(undefined); }}>
+                {Object.keys(overrides).length || draft?.topic ? (
+                  <button className="btn btn--ghost btn--small" onClick={() => void api.resetSettings().then(setSettings)}>
                     reset all
                   </button>
-                ) : null}<span className="mono muted" title={resolved?.digest}>{resolved?.digest.slice(7, 19)}…</span></div>
+                ) : null}
+                <span className="mono muted" title={resolved?.digest}>
+                  {resolved?.digest.slice(7, 19)}…
+                </span>
+              </div>
             </div>
             <div className="card__body">
               <pre className="yaml">
-                {`pheasant-lab run --config ${selected ?? ""}${set.map((s) => ` \\\n  --set ${s}`).join("")}${topic ? ` \\\n  --topic ${topic}` : ""}`}
+                {`pheasant-lab run --config ${selected ?? ""}${set.map((s) => ` \\\n  --set ${s}`).join("")}${draft?.topic ? ` \\\n  --topic ${draft.topic}` : ""}${draft?.launch.max_cost_usd ? ` \\\n  --max-cost-usd ${draft.launch.max_cost_usd}` : ""}`}
               </pre>
-              {base && resolved && base.digest !== resolved.digest ? (
-                <div className="pill pill--warn" style={{ marginTop: 8, whiteSpace: "normal" }}>
-                  The digest differs from the file's: a new run, not comparable with one started from the file as is.
-                </div>
-              ) : null}
               {resolved?.unresolved_env.length ? (
                 <div className="pill pill--danger" style={{ marginTop: 8, whiteSpace: "normal" }}>
                   unset environment: {resolved.unresolved_env.join(", ")}
@@ -406,12 +533,14 @@ export function ConfigurePage({ config, onConfig }: { config?: string; onConfig:
             <button className="btn" style={{ flex: 1, justifyContent: "center" }} disabled={!!busy || !resolved} onClick={() => void launch("demo")}>
               {busy === "demo" ? <span className="spinner" /> : null} Offline demo
             </button>
-            <button className="btn btn--primary" style={{ flex: 2, justifyContent: "center" }} disabled={!!busy || !resolved} onClick={() => void launch("pipeline")}>
+            <button className="btn btn--primary" style={{ flex: 2, justifyContent: "center" }} disabled={!!busy || !resolved || !settings?.valid} onClick={() => void launch("pipeline")}>
               {busy === "pipeline" ? <span className="spinner" /> : null} Launch run ▸
             </button>
           </div>
           <div className="muted small">
-            <b>Offline demo</b>: fixtures and the mock region, free. <b>Launch run</b>: <code>pheasant-lab run</code> — collect → freeze → evaluate → replay → report → verify, resuming any stage that crashes and stopping at the first refusal. It runs detached: closing the console does not stop it, and Runs offers <b>Resume</b> for one that was interrupted.
+            <b>Offline demo</b>: fixtures and the mock region, free. <b>Launch run</b>: <code>pheasant-lab run</code> — collect → freeze → evaluate → replay → report → verify,
+            resuming any stage that crashes and stopping at the first refusal. It runs detached: closing the console does not stop it, and Runs offers <b>Resume</b> for one that
+            was interrupted.
           </div>
         </div>
       </div>
@@ -419,104 +548,23 @@ export function ConfigurePage({ config, onConfig }: { config?: string; onConfig:
   );
 }
 
-/**
- * `logging.yaml`, as overrides. These describe how a run records itself, and
- * they are part of the resolved config - so changing one moves the config
- * digest, and the page says so like any other setting. The console's own
- * housekeeping (retention, deletion) is on the Logs page instead: that is
- * about the files, not about the experiment.
- */
-function RunLogging({
-  tree,
-  overrides,
-  change,
-  source,
-}: {
-  tree: Record<string, any> | undefined;
-  overrides: Record<string, string>;
-  change: (path: string, value: string | null) => void;
-  source?: string;
-}) {
-  // The `--set` key is routed by its head (`logging.level`, `tracing.…`);
-  // the resolved tree nests the whole file under `logging`.
-  const at = (key: string) => `logging.${key}`;
-  const isSet = (key: string) => key in overrides;
-  const value = (key: string) => (isSet(key) ? overrides[key] : String(read(tree, at(key)) ?? ""));
-  const reset = (key: string, hint: string) =>
-    isSet(key) ? (
-      <button className="btn btn--ghost btn--small" style={{ padding: 0 }} onClick={() => change(key, null)}>
-        set by you · reset
-      </button>
-    ) : (
-      hint
-    );
-  const select = (key: string, label: string, options: string[], hint: string) => (
-    <div className={`fld${isSet(key) ? " fld--set" : ""}`}>
-      <label>{label}</label>
-      <select
-        className="input"
-        value={value(key)}
-        onChange={(e) => change(key, e.target.value === String(read(tree, at(key))) ? null : e.target.value)}
-      >
-        {options.map((o) => (
-          <option key={o} value={o}>
-            {o}
-          </option>
-        ))}
-      </select>
-      <div className="h">{reset(key, hint)}</div>
-    </div>
-  );
-  const toggle = (key: string, label: string, hint: string) => {
-    const on = value(key) === "true";
-    const base = String(read(tree, at(key)));
-    return (
-      <div className={`fld${isSet(key) ? " fld--set" : ""}`}>
-        <label>{label}</label>
-        <button className={`btn btn--small${on ? " btn--primary" : ""}`} onClick={() => change(key, String(!on) === base ? null : String(!on))}>
-          {on ? "on" : "off"}
-        </button>
-        <div className="h">{reset(key, hint)}</div>
-      </div>
-    );
-  };
+/** The next run's name: console bookkeeping, never part of the digest. */
+function RunLabel({ value, onCommit }: { value: string; onCommit: (label: string) => void }) {
+  const draft = useDraftText(value, (text) => onCommit(text.trim()));
   return (
-    <div className="card" id="run-logging">
-      <div className="card__head">
-        Run logging <span className="sub mono">{source?.split("/").slice(-2).join("/")}</span>
-        <div className="r">
-          <Link className="btn btn--ghost btn--small" to="/logs" style={{ textDecoration: "none" }}>
-            Retention & deletion →
-          </Link>
-        </div>
-      </div>
-      <div className="card__body grid3">
-        {select("logging.level", "level", ["DEBUG", "INFO", "WARNING", "ERROR"], "every stage's process; -v still wins")}
-        {select("logging.format", "format", ["text", "json"], "json: one object per line")}
-        <div className={`fld${isSet("logging.file") ? " fld--set" : ""}`}>
-          <label>file</label>
-          <input
-            className="input mono"
-            placeholder="stderr only"
-            value={isSet("logging.file") ? overrides["logging.file"] : String(read(tree, "logging.logging.file") ?? "")}
-            onChange={(e) => change("logging.file", e.target.value || null)}
-          />
-          <div className="h">{reset("logging.file", "relative = inside the run, e.g. logs/lab.log")}</div>
-        </div>
-        {toggle("tracing.mcp_transcript.store_request_body", "MCP request bodies", "kept in raw/mcp-calls")}
-        {toggle("tracing.mcp_transcript.store_response_body", "MCP response bodies", "what the region answered")}
-        <div className={`fld${isSet("tracing.mcp_transcript.max_body_bytes") ? " fld--set" : ""}`}>
-          <label>max body bytes</label>
-          <input
-            className="input"
-            type="number"
-            min={0}
-            value={value("tracing.mcp_transcript.max_body_bytes")}
-            onChange={(e) => change("tracing.mcp_transcript.max_body_bytes", e.target.value)}
-          />
-          <div className="h">per transcript body; larger bodies are cut</div>
-        </div>
-      </div>
+    <div className="fld">
+      <label htmlFor="run-label">run name</label>
+      <input
+        id="run-label"
+        className="input"
+        placeholder="optional — shown in Runs"
+        value={draft.text}
+        onChange={(e) => draft.onChange(e.target.value)}
+        onFocus={draft.onFocus}
+        onBlur={draft.onBlur}
+        onKeyDown={draft.onKeyDown}
+      />
+      <div className="h">a label for the run this launch makes; rename it any time in Runs</div>
     </div>
   );
 }

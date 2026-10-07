@@ -192,9 +192,16 @@ def _render(topic: Topic, max_subtopics: int) -> str:
         if topic.intent
         else ""
     )
+    details = (
+        f"Further detail from the person (constraints, inclusions, exclusions):\n"
+        f"{topic.details.strip()}\n"
+        if topic.details
+        else ""
+    )
     return (
         f"Topic: {topic.title}\n"
         f"{intent}"
+        f"{details}"
         f"Seed terms: {seeds}\n"
         f"Date window: {window.from_ or 'open'} to {window.to or 'open'}\n"
         f"Facets:\n{facets}\n\n"
