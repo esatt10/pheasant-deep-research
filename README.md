@@ -280,7 +280,8 @@ holds nothing else: it submits documents and seals snapshots there.
 
 **What the region needs** (pheasant >= 0.12.6; checked end to end against
 0.12.16, 0.13.0, 0.13.1, 0.13.2 and 0.13.4, the last two both standalone and
-role-split; the shipped pheasant file targets 0.13.4):
+role-split; the shipped pheasant file targets 0.13.5, whose MCP surface is
+0.13.4's - it adds only pheasant-kb's documentation of this lab):
 
 * `readiness.enabled: true` — `submit_documents`, the receipts and snapshots
   live on the readiness plane;
