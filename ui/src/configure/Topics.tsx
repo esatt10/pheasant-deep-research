@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import type { TopicDoc, TopicDraft, TopicList } from "../types";
+import type { Catalog, TopicDoc, TopicDraft, TopicList } from "../types";
+
+type DraftModel = Catalog["draft_models"][number];
 
 /**
  * Research topics: the ones the config already sees, and a form to add one.
@@ -17,6 +19,12 @@ import type { TopicDoc, TopicDraft, TopicList } from "../types";
  * the planner's model, through the CLI's `draft-topic` under its own small
  * budget, to propose a title, seed terms and facets for you to edit. The
  * intent is saved on the topic, and the planner reads it on every run.
+ *
+ * One click generates with GPT-6.1 Sol or GPT-6 Luna instead, reading
+ * everything already in the form - intent, title, details, facets, window,
+ * preferred types - as context. The draft **replaces** the form's content
+ * (it is shown which model wrote it), so there is never a half-merged form in
+ * which nobody can tell which words were whose.
  */
 
 const SOURCE_TYPES = [
@@ -62,6 +70,7 @@ function toYaml(topic: TopicDoc): string {
     `- id: ${topic.id || "…"}`,
     `  title: ${q(topic.title || "…")}`,
     ...(topic.intent ? [`  intent: ${JSON.stringify(topic.intent)}`] : []),
+    ...(topic.details ? [`  details: ${JSON.stringify(topic.details)}`] : []),
     "  seed_terms:",
     ...(topic.seed_terms.length ? topic.seed_terms.map((t) => `    - ${q(t)}`) : ["    []"]),
     `  date_range: { from: ${topic.date_range.from ?? "null"}, to: ${topic.date_range.to ?? "null"} }`,
@@ -79,20 +88,27 @@ export function Topics({
   config,
   set,
   selected,
+  draftModels,
   onSelect,
   onSaved,
+  onDeleted,
 }: {
   config: string;
   set: string[];
   selected?: string;
+  draftModels: DraftModel[];
   onSelect: (topicId: string | undefined) => void;
   onSaved: (override: string, topicId: string) => void;
+  onDeleted: (override: string, topicId: string) => void;
 }) {
   const [list, setList] = useState<TopicList | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [saved, setSaved] = useState<string | null>(null);
-  const key = `${config}|${set.join("|")}`;
+  // Bumped after a save or a removal: when the run already points at the
+  // local file, the override does not change and would not reload the list.
+  const [version, setVersion] = useState(0);
+  const key = `${config}|${set.join("|")}|${version}`;
 
   useEffect(() => {
     let live = true;
@@ -107,6 +123,17 @@ export function Topics({
   }, [key]);
 
   const active = selected ?? list?.topics[0]?.id;
+
+  const remove = async (topicId: string, title: string) => {
+    if (!window.confirm(`Remove “${title}” from this console's topics? Runs already made keep it.`)) return;
+    try {
+      const result = await api.deleteTopic(topicId);
+      setVersion((n) => n + 1);
+      onDeleted(result.override, topicId);
+    } catch (caught) {
+      setError((caught as Error).message);
+    }
+  };
 
   return (
     <div className="card" id="topics">
@@ -139,12 +166,14 @@ export function Topics({
         <TopicForm
           config={config}
           set={set}
+          draftModels={draftModels}
           existing={list?.topics.map((t) => t.id) ?? []}
           onCancel={() => setAdding(false)}
           onSave={async (topic) => {
             const result = await api.addTopic({ config, set, topic });
             setAdding(false);
             setSaved(topic.id);
+            setVersion((n) => n + 1);
             onSaved(result.override, topic.id);
           }}
         />
@@ -157,9 +186,25 @@ export function Topics({
               <div className="topic__head">
                 <span className={`radio${on ? " radio--on" : ""}`} />
                 <b>{topic.title}</b>
+                {(list?.topics.length ?? 0) > 1 ? (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    className="topic__del"
+                    aria-label={`Remove ${topic.title}`}
+                    title="Remove from this console's topics (shipped files are not edited)"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void remove(topic.id, topic.title);
+                    }}
+                  >
+                    ✕
+                  </span>
+                ) : null}
               </div>
               <div className="mono muted small topic__id">{topic.id}</div>
               {topic.intent ? <div className="topic__intent">“{topic.intent}”</div> : null}
+              {topic.details ? <div className="muted small">{topic.details}</div> : null}
               <div className="topic__facets">
                 {topic.facets.map((f) => (
                   <span key={f.id} className="pill" title={f.id}>
@@ -185,18 +230,21 @@ export function Topics({
 function TopicForm({
   config,
   set,
+  draftModels,
   existing,
   onCancel,
   onSave,
 }: {
   config: string;
   set: string[];
+  draftModels: DraftModel[];
   existing: string[];
   onCancel: () => void;
   onSave: (topic: TopicDoc) => Promise<void>;
 }) {
   const [intent, setIntent] = useState("");
-  const [drafting, setDrafting] = useState(false);
+  const [details, setDetails] = useState("");
+  const [drafting, setDrafting] = useState<string | null>(null);
   const [draft, setDraft] = useState<TopicDraft | null>(null);
   const [title, setTitle] = useState("");
   const [id, setId] = useState("");
@@ -217,6 +265,7 @@ function TopicForm({
       id: topicId,
       title: title.trim(),
       intent: intent.trim() || null,
+      details: details.trim() || null,
       seed_terms: seeds.split("\n").map((s) => s.trim()).filter(Boolean),
       date_range: { from: from || null, to: to || null },
       facets: facets
@@ -224,7 +273,7 @@ function TopicForm({
         .map((f) => ({ id: f.idEdited ? f.id : slug(f.label), label: f.label.trim(), weight: Number(f.weight) || 1 })),
       source_authority: { family_key: families, preferred_types: types, minimum_peer_reviewed: Number(minimum) || 0 },
     }),
-    [topicId, title, intent, seeds, from, to, facets, families, types, minimum],
+    [topicId, title, intent, details, seeds, from, to, facets, families, types, minimum],
   );
 
   const problems: string[] = [];
@@ -234,19 +283,39 @@ function TopicForm({
   if (!topic.facets.length) problems.push("at least one facet — coverage is measured against them");
   if (!topic.seed_terms.length && !topic.intent) problems.push("seed terms or an intent");
 
+
   const setFacet = (index: number, patch: Partial<FacetDraft>) =>
     setFacets((rows) => rows.map((row, i) => (i === index ? { ...row, ...patch } : row)));
   const toggle = (list: string[], value: string, apply: (v: string[]) => void) =>
     apply(list.includes(value) ? list.filter((v) => v !== value) : [...list, value]);
 
-  // Fills the form from a draft. Everything stays editable; nothing is saved.
-  const runDraft = async () => {
-    setDrafting(true);
+  // Enough to draft from: an intent, or a title and some detail.
+  const context = `${intent} ${title} ${details}`.trim();
+  const canDraft = context.length >= 12;
+
+  // Replaces the form with a draft. Everything stays editable; nothing is saved.
+  const runDraft = async (choice?: DraftModel) => {
+    setDrafting(choice?.model ?? "planner");
     setError(null);
     try {
       const given = seeds.split("\n").map((t) => t.trim()).filter(Boolean);
-      const next = await api.draftTopic({ config, set, intent, seed_terms: given });
+      const next = await api.draftTopic({
+        config,
+        set,
+        intent,
+        seed_terms: given,
+        ...(choice ? { model: choice.model, reasoning_effort: choice.reasoning_effort } : {}),
+        context: {
+          title,
+          details,
+          facets: facets.filter((f) => f.label.trim()).map((f) => ({ label: f.label, weight: Number(f.weight) || 1 })),
+          date_range: { from: from || null, to: to || null },
+          preferred_types: types,
+        },
+      });
       setDraft(next);
+      if (!intent.trim()) setIntent(next.intent ?? "");
+      setDetails(next.details ?? details);
       setTitle(next.title);
       setId(next.id);
       setIdEdited(true);
@@ -259,7 +328,7 @@ function TopicForm({
     } catch (caught) {
       setError((caught as Error).message);
     } finally {
-      setDrafting(false);
+      setDrafting(null);
     }
   };
 
@@ -289,12 +358,34 @@ function TopicForm({
           value={intent}
           onChange={(e) => setIntent(e.target.value)}
         />
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
-          <button className="btn btn--small" disabled={drafting || intent.trim().length < 12} onClick={() => void runDraft()}>
-            {drafting ? <span className="spinner" /> : "✦"} Draft from intent
+        <label htmlFor="topic-details" style={{ marginTop: 8 }}>
+          Details <span className="muted">· background, what must be covered or left out, who the answer is for — the planner reads it after the intent</span>
+        </label>
+        <textarea
+          id="topic-details"
+          className="input"
+          rows={2}
+          placeholder="e.g. Prioritise in-vivo evidence after 2018; leave out sulfide electrolytes; the reader is a materials engineer choosing a cell design."
+          value={details}
+          onChange={(e) => setDetails(e.target.value)}
+        />
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+          {draftModels.map((choice) => (
+            <button
+              key={choice.model}
+              className="btn btn--small btn--primary"
+              disabled={!!drafting || !canDraft}
+              title={`${choice.note}. Uses everything in this form as context and replaces it with the draft.`}
+              onClick={() => void runDraft(choice)}
+            >
+              {drafting === choice.model ? <span className="spinner" /> : "✦"} Generate with {choice.label}
+            </button>
+          ))}
+          <button className="btn btn--small" disabled={!!drafting || !canDraft} onClick={() => void runDraft()} title="The planner's configured model (offline: a rule-based draft)">
+            {drafting === "planner" ? <span className="spinner" /> : "✦"} Draft with the planner's model
           </button>
           <span className="h" style={{ margin: 0 }}>
-            the planner's model proposes a title, seed terms and facets for you to edit — saved with the topic, the intent is the planner's brief on every run
+            reads the intent, title, details, facets and window you have so far, and replaces the form with its draft — every field stays editable
           </span>
         </div>
         {draft ? (

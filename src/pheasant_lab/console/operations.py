@@ -476,7 +476,7 @@ class Operations:
             message = output.strip().splitlines()[-1] if output.strip() else "failed"
             message = message.removeprefix("refused: ")
             if "no price for model" in message:
-                message += " Set one under Budget → Model prices (or the lab_set_price tool)."
+                message += " Set one under Configure → Agents & models → Model prices (or the lab_set_price tool)."
             raise ValueError(message)
         return json.loads(output[output.index("{") :])
 

@@ -163,6 +163,7 @@ class Launcher:
             if "=" not in item:
                 raise ValueError(f"override {item!r} is not a.b=value")
             common += ["--set", item]
+        common += self._output_root_override(config_path, overrides or [])
         if kind == "demo":
             argv = ["demo", *common]
             if topic:
@@ -277,6 +278,35 @@ class Launcher:
 
     def config_path(self, config: str) -> Path:
         return self._config_path(config)
+
+    def _output_root_override(self, config_path: Path, overrides: list[str]) -> list[str]:
+        """Point a child at this console's output root when its config names another.
+
+        A console started with ``--runs`` elsewhere (the Docker image's runs
+        volume, say) would otherwise launch runs into the config's own
+        ``experiment.output_root`` and never see them. The output root is left
+        out of the config digest, so saying it costs a run nothing.
+        """
+
+        if any(item.startswith("experiment.output_root=") for item in overrides):
+            return []
+        from ..settings import load_config
+
+        try:
+            config = load_config(
+                config_path,
+                overrides=dict(item.split("=", 1) for item in overrides),
+                project_root=self.project_root,
+                env_file=".env",
+            )
+        except Exception:  # the child refuses it in its own words
+            return []
+        configured = Path(config.experiment.output_root)
+        if not configured.is_absolute():
+            configured = self.project_root / configured
+        if configured.resolve() == self.output_root.resolve():
+            return []
+        return ["--set", f"experiment.output_root={self.output_root.resolve()}"]
 
     # -- internals ---------------------------------------------------------
     def _all(self) -> list[Launch]:

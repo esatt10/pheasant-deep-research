@@ -50,7 +50,9 @@ export function LivePage({ onCost }: { onCost: (cost: { spent: number; budget: n
   const { runId } = useParams();
   const navigate = useNavigate();
   const { model: liveModel, events, state: stream } = useRunStream(runId);
-  const [view, setView] = useState<View>("split");
+  // The constellation is the default view: the swarm, its sources and the region
+  // at a glance. The tabs switch to swimlanes or both.
+  const [view, setView] = useState<View>("graph");
   const [focus, setFocus] = useState<Focus>(null);
   const [selected, setSelected] = useState<LabEvent | null>(null);
   const [replaySeq, setReplaySeq] = useState<number | null>(null);
@@ -179,7 +181,7 @@ export function LivePage({ onCost }: { onCost: (cost: { spent: number; budget: n
         </span>
         <div className="r">
           <div className="tabs" role="tablist">
-            {(["split", "graph", "lanes"] as View[]).map((key) => (
+            {(["graph", "lanes", "split"] as View[]).map((key) => (
               <button key={key} className={`tab${view === key ? " tab--on" : ""}`} onClick={() => setView(key)} role="tab" aria-selected={view === key}>
                 {key === "split" ? "Both" : key === "graph" ? "Constellation" : "Swimlanes"}
               </button>
