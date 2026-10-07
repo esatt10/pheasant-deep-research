@@ -164,3 +164,50 @@ def test_the_transcript_never_carries_an_authorization_header(config, mock_serve
     for line in body.splitlines():
         record = json.loads(line)
         assert record["request_digest"].startswith("sha256:")
+
+
+def _transport_against(handler):
+    import httpx
+
+    from pheasant_lab.pheasant.client import StreamableHttpTransport
+
+    transport = StreamableHttpTransport("http://region.test:8765/mcp", token="secret")
+    transport._client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+    return transport
+
+
+def test_a_same_origin_redirect_is_adopted_once():
+    """pheasant answers ``/mcp`` with a 307 to ``/mcp/``: pay it once, not per call."""
+
+    import httpx
+
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        if request.url.path == "/mcp":
+            return httpx.Response(307, headers={"location": "http://region.test:8765/mcp/"})
+        body = json.loads(request.content)
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {}})
+
+    transport = _transport_against(handler)
+    for index in range(3):
+        transport.send({"jsonrpc": "2.0", "id": index, "method": "ping"})
+    assert seen == ["/mcp", "/mcp/", "/mcp/", "/mcp/"]
+    assert transport.url == "http://region.test:8765/mcp/"
+
+
+def test_a_cross_origin_redirect_is_never_adopted():
+    """A bearer token is not re-aimed at a host the configuration did not name."""
+
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "region.test":
+            return httpx.Response(307, headers={"location": "http://elsewhere.test/mcp/"})
+        body = json.loads(request.content)
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {}})
+
+    transport = _transport_against(handler)
+    transport.send({"jsonrpc": "2.0", "id": 1, "method": "ping"})
+    assert transport.url == "http://region.test:8765/mcp"

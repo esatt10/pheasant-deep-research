@@ -143,6 +143,7 @@ class StreamableHttpTransport:
             headers=self._headers(),
             timeout=httpx.Timeout(timeout or self.timeout, connect=self.connect_timeout),
         )
+        self._adopt_redirect(response)
         session = response.headers.get("mcp-session-id")
         if session:
             self._session_id = session
@@ -181,10 +182,28 @@ class StreamableHttpTransport:
             headers=self._headers(),
             timeout=httpx.Timeout(self.timeout, connect=self.connect_timeout),
         )
+        self._adopt_redirect(response)
         if response.status_code >= 400 and response.status_code not in (202, 204):
             raise TransportError(
                 f"HTTP {response.status_code} on notification {message.get('method')}"
             )
+
+    def _adopt_redirect(self, response: Any) -> None:
+        """Post to where the server said the endpoint lives, from now on.
+
+        pheasant mounts MCP at ``/mcp/`` and answers ``/mcp`` - the spelling
+        every client config uses - with a 307. Following it on every call is
+        two round trips per tool call for the whole run. A redirect is adopted
+        only within the same origin: a bearer token is never re-aimed at a
+        host the configuration did not name.
+        """
+
+        if not getattr(response, "history", None):
+            return
+        final = response.url
+        first = response.history[0].request.url
+        if (final.scheme, final.host, final.port) == (first.scheme, first.host, first.port):
+            self.url = str(final)
 
     def close(self) -> None:
         if self._client is not None:

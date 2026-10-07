@@ -635,6 +635,9 @@ def cmd_collect(args: argparse.Namespace) -> int:
             session.ingestor.acknowledge()
             reconcile = session.ingestor.reconcile()
             session.state.set("reconcile", reconcile)
+            inventory = session.ingestor.inventory()
+            if inventory is not None:
+                session.state.set("inventory", inventory)
 
         session.state.update(
             topic_id=topic.id,

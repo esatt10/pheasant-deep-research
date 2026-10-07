@@ -279,8 +279,8 @@ The lab writes to a knowledge base and a source it owns. Use a namespace that
 holds nothing else: it submits documents and seals snapshots there.
 
 **What the region needs** (pheasant >= 0.12.6; checked end to end against
-0.12.16, 0.13.0, 0.13.1 and 0.13.2, the last both standalone and role-split;
-the shipped pheasant file targets 0.13.2):
+0.12.16, 0.13.0, 0.13.1, 0.13.2 and 0.13.4, the last two both standalone and
+role-split; the shipped pheasant file targets 0.13.4):
 
 * `readiness.enabled: true` — `submit_documents`, the receipts and snapshots
   live on the readiness plane;
@@ -300,6 +300,14 @@ document is indexed, and from pheasant 0.13.2 (`get_index_queue`) it reports
 each task's claim state while it waits and holds `P1` until its memory has
 left the queue (`memory.indexed`). Against an older fleet the memory wait
 cannot be confirmed, and `P1`'s report says so as a limitation.
+
+**The region's own count (optional).** From pheasant 0.13.3 the lab asks
+`describe_source` what the region holds for the lab's source once the barrier
+is crossed, and records it beside the indexed receipts (`ingest.inventory`:
+`consistent` or `mismatch`). Reconcile asks whether every receipt's artifact
+is there; this asks the converse, which is how a duplicate or a stray file in
+the landing directory shows up. The console's region chip shows the same
+count, read over HTTP. Older regions simply do not report it.
 
 **Graph neighbourhoods (optional).** Pheasant 0.13.1 can attach each hit's
 graph neighbourhood to a search (`expand`), and the shipped pheasant file maps

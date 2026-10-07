@@ -314,3 +314,26 @@ make ui && uv run pheasant-lab serve                  # the console, http://127.
   memory hits between two otherwise identical runs. Found by running the lab
   against a real fleet (0.13.2), not by the mock, which indexed memory
   in-call regardless of `mock_claim_seconds` until it was taught otherwise.
+- **A redirect followed on every call is a round trip paid on every call.**
+  pheasant mounts MCP at `/mcp/` and answers `/mcp` - the URL every client
+  config names - with a 307, and `httpx` follows it per request. So each of a
+  run's ~140 tool calls was two HTTP round trips, invisible in every test
+  because the mock is in-process. The transport adopts a same-origin redirect
+  once per session (never a cross-origin one: the bearer token stays on the
+  host the config named). Found by counting `307`s in a live run's log
+  against pheasant 0.13.4: 136 calls, 3 redirects after the fix.
+- **A probe that swallows a 401 paints a green chip over a locked door.** On a
+  region with `security.api_auth`, `/ready` is public and everything else is
+  not, so a console with no `PHEASANT_API_TOKEN` read `ready` and then got 401
+  from `/queue` - which it treated as "no queue to show". The chip went green
+  over a region that would refuse every call the run was about to make. A 401
+  is its own notice now, worded for "unset" and for "wrong". Found by probing
+  a real 0.13.4 api replica with the token unset.
+- **pheasant's two surfaces decide "publish or run" differently.** HTTP `/sync`
+  on `--role api` refuses to run in-call; MCP `sync_source` publishes only
+  when `graph.query_service_url` is set, and otherwise indexes in the call
+  even on an api replica. The shipped fleet always sets that URL, so the lab
+  sees `queued` there - but a hand-built role-split region without a graph
+  service answers `completed`, and a capture taken against one records the
+  wrong shape. `scripts/capture_pheasant_fixtures.py --queued-sync` needs the
+  graph-service replica for that reason.

@@ -8,9 +8,14 @@
 # adapter cannot satisfy the tool's advertised JSON Schema.
 #
 # The defaults match pheasant >= 0.12.6 (see its docs/mcp_tools.md), checked
-# end to end against 0.12.16, 0.13.0, 0.13.1 and 0.13.2, standalone and
-# role-split. As shipped it targets 0.13.2: `expand` (0.13.1, below; see there
-# for older regions) and `get_index_queue` (0.13.2, optional).
+# end to end against 0.12.16, 0.13.0, 0.13.1, 0.13.2 and 0.13.4, standalone
+# and role-split. As shipped it targets 0.13.4: `expand` (0.13.1, below; see
+# there for older regions), `get_index_queue` (0.13.2, optional) and
+# `describe_source` (0.13.3, optional).
+#
+# Use the URL as given (`/mcp`): pheasant answers it with a redirect to
+# `/mcp/`, and the client adopts a same-origin redirect once per session
+# rather than paying it on every call.
 # ---------------------------------------------------------------------------
 
 transport: ${PHEASANT_MCP_TRANSPORT:-streamable_http}
@@ -85,6 +90,16 @@ capabilities:
   # Observational only: it is left out of the config digest.
   index_queue:
     tool: ${PHEASANT_TOOL_INDEX_QUEUE:-get_index_queue}
+    required: false
+  # pheasant >= 0.13.3 (absent before it, which is fine). After the barrier
+  # the lab asks the region what it holds for the lab's source - a count
+  # read off the region's own index - and records it beside the indexed
+  # receipts (`ingest.inventory`: consistent | mismatch). Reconcile asks
+  # whether every receipt's artifact is there; this is the converse. The
+  # console's region chip reads the same answer over HTTP. Observational
+  # only: left out of the config digest, like index_queue.
+  source_inventory:
+    tool: ${PHEASANT_TOOL_SOURCE_INVENTORY:-describe_source}
     required: false
 
 discovery:

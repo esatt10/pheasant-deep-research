@@ -173,6 +173,13 @@ export interface RunModel {
       acknowledged?: number;
     };
     queue: QueueTask[] | null;
+    inventory?: {
+      disposition?: "consistent" | "mismatch";
+      region_documents?: number;
+      region_bytes?: number;
+      receipts_indexed?: number;
+      receipts?: number;
+    } | null;
   };
   notices: Notice[];
   notice_history: Notice[];
@@ -254,6 +261,14 @@ export interface RegionProbe {
   };
   queue?: { enabled: boolean; listing: string; tasks: (QueueTask & { source: string })[] } | null;
   queue_unsupported?: boolean;
+  /** `/sources/{name}/overview` for the lab's source (pheasant >= 0.13.3). */
+  inventory?: {
+    source_name: string;
+    documents?: number | null;
+    size_bytes?: number | null;
+    status?: string | null;
+    last_indexed_at?: string | null;
+  } | null;
   notices: Notice[];
 }
 

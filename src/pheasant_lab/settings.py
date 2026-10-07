@@ -769,7 +769,8 @@ class LabConfig(_Model):
         for topic in payload.get("topics") or []:
             if isinstance(topic, dict) and topic.get("intent") is None:
                 topic.pop("intent", None)
-        # Observational, not experimental: reading the index queue changes what
+        # Observational, not experimental: reading the index queue (or the
+        # region's own inventory of the lab's source) changes what
         # the run *reports* about the pre-claim interval and nothing it
         # measures, and the mock's simulated claim delay changes when the
         # barrier crosses, not what it crosses with. Left out so a pheasant
@@ -779,6 +780,7 @@ class LabConfig(_Model):
             capabilities = pheasant.get("capabilities")
             if isinstance(capabilities, dict):
                 capabilities.pop("index_queue", None)
+                capabilities.pop("source_inventory", None)
             if not pheasant.get("mock_claim_seconds"):
                 pheasant.pop("mock_claim_seconds", None)
         return digest(payload)
