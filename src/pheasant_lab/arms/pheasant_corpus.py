@@ -57,6 +57,8 @@ class PheasantCorpusArm(Arm):
                     query=query,
                     namespace=self.config.pheasant.knowledge_base,
                     top_k=self.config.replay.max_results_per_search,
+                    mode=self.config.replay.wire_search_mode,
+                    min_score=self.config.replay.min_score,
                     snapshot_id=self.context.snapshot_id,
                     as_of=question.as_of,
                     memory=self.memory_options(),

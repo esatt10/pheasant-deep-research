@@ -44,7 +44,7 @@ from .pheasant.mock import MockPheasantServer
 from .pheasant.retrieval import Retriever
 from .providers.base import ProviderError, ProviderRegistry, build_provider
 from .redaction import Redactor
-from .settings import ConfigError, LabConfig, load_config
+from .settings import ConfigError, LabConfig, RoleModel, load_config
 from .tracing.events import Tracer, read_jsonl
 
 LOG = logging.getLogger("pheasant_lab")
@@ -350,10 +350,12 @@ _ROLE_STAGE = {
 }
 
 
-def _model(config: LabConfig, role: str, tracer: Tracer | None = None) -> Any:
+def _model(
+    config: LabConfig, role: str, tracer: Tracer | None = None, *, spec: RoleModel | None = None
+) -> Any:
     from .models.retry import RetryingProvider
 
-    spec = config.role(role)
+    spec = spec or config.role(role)
     key_env = {"openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY"}.get(spec.provider)
     inner = build_model(spec, role=role, api_key=os.environ.get(key_env) if key_env else None)
 
@@ -439,6 +441,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             "replay.graph_expansion is set but the pheasant file's argument_map.search does "
             "not map `expand`; map it (pheasant >= 0.13.1) or "
             "unset replay.graph_expansion"
+        )
+    if config.replay.min_score is not None and "min_score" not in search_map:
+        findings.append(
+            "replay.min_score is set but the pheasant file's argument_map.search does not map "
+            "`min_score`; map it or unset replay.min_score"
         )
 
     transport = config.pheasant.transport
@@ -1323,17 +1330,28 @@ def cmd_draft_topic(args: argparse.Namespace) -> int:
 
     import yaml
 
-    from .orchestration.drafter import draft_topic
+    from .orchestration.drafter import draft_topic, drafting_role
 
     config = _resolve_config(args)
     seeds = [t for t in (args.seed_terms or "").split(",") if t.strip()]
     try:
+        context = json.loads(args.context_json) if args.context_json else {}
+        if not isinstance(context, dict):
+            raise ValueError("--context-json must be a JSON object")
+        spec = drafting_role(
+            config,
+            model=args.model,
+            provider=args.provider,
+            reasoning_effort=args.reasoning_effort,
+        )
         draft = draft_topic(
             config,
-            _model(config, "planner"),
-            intent=args.intent,
+            _model(config, "planner", spec=spec),
+            intent=args.intent or "",
             seed_terms=seeds,
             max_cost_usd=args.max_cost_usd,
+            context=context,
+            spec=spec,
         )
     except (RuntimeError, ValueError) as exc:
         # A missing key, an unpriced model, an intent too thin to read: each
@@ -1423,6 +1441,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
             token=environment.get(token_env),
             allow_unauthenticated=bool(getattr(args, "allow_unauthenticated", False)),
             env_file=env_file,
+            run_scope=_run_scope(args, environment),
         )
     except Unauthenticated as exc:
         print(f"refused: {exc}")
@@ -1431,7 +1450,13 @@ def cmd_serve(args: argparse.Namespace) -> int:
     print(f"pheasant-lab console on http://{args.host}:{server.server_address[1]}")
     if console.token is not None:
         print(f"access key required ({token_env}); the browser asks for it once per tab")
-    print(f"runs: {output_root}")
+    print(
+        f"runs: {output_root}"
+        + (f" (only runs made in: {console.run_scope})" if console.run_scope else "")
+    )
+    print(
+        f"MCP: http://{args.host}:{server.server_address[1]}/mcp (or `pheasant-lab mcp` on stdio)"
+    )
     if console.ui_dist is None:
         print("UI not built: run `make ui`. The API is live at /api.")
     try:
@@ -1440,6 +1465,69 @@ def cmd_serve(args: argparse.Namespace) -> int:
         print("console stopped; launched runs keep running")
     finally:
         server.server_close()
+    return EXIT_OK
+
+
+def _run_scope(args: argparse.Namespace, environment: dict[str, str]) -> str | None:
+    scope = getattr(args, "run_scope", None)
+    if scope is None:
+        scope = environment.get("PHEASANT_LAB_RUN_SCOPE")
+    return (scope or "").strip() or None
+
+
+def cmd_mcp(args: argparse.Namespace) -> int:
+    """The console's tools over MCP stdio: configure, launch and manage runs from an agent."""
+
+    from .console.mcp import serve_stdio
+    from .console.server import Console, default_ui_dist
+    from .settings import load_dotenv
+
+    project_root = Path(getattr(args, "project_root", None) or Path.cwd()).resolve()
+    env_file = getattr(args, "env_file", ".env")
+    config = load_config(args.config, project_root=project_root, env_file=env_file)
+    output_root = Path(args.output_root_dir or config.experiment.output_root)
+    if not output_root.is_absolute():
+        output_root = project_root / output_root
+    environment = {**(load_dotenv(project_root / env_file) if env_file else {}), **os.environ}
+    console = Console(
+        project_root=project_root,
+        output_root=output_root,
+        default_config=str(Path(args.config)),
+        ui_dist=default_ui_dist(project_root),
+        run_scope=_run_scope(args, environment),
+    )
+    console.env_file = env_file
+    serve_stdio(console)
+    return EXIT_OK
+
+
+def cmd_settings(args: argparse.Namespace) -> int:
+    """Explain every setting: meaning, valid values, current value, recommendation."""
+
+    from .catalog import catalog, describe
+
+    config = _resolve_config(args)
+    if args.key:
+        row = describe(args.key, config)
+        print(json.dumps(row, indent=2, default=str))
+        return EXIT_OK
+    result = catalog(config, include_advanced=args.advanced)
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+        return EXIT_OK
+    titles = {s["key"]: s["title"] for s in result["sections"]}
+    current = None
+    for row in result["fields"]:
+        if args.section and row["section"] != args.section:
+            continue
+        if row["section"] != current:
+            current = row["section"]
+            print(f"\n## {titles.get(current, current)}")
+        hint = f"  (recommended: {row['recommended']})" if row.get("recommended") else ""
+        print(f"{row['key']} = {json.dumps(row.get('current'), default=str)}{hint}")
+        print(f"    {row['help']}")
+        if row.get("values"):
+            print(f"    values: {row['values']}")
     return EXIT_OK
 
 
@@ -1548,8 +1636,20 @@ def build_parser() -> argparse.ArgumentParser:
         "draft-topic", help="draft a research topic (title, seed terms, facets) from an intent"
     )
     common(draft, mutating=False)
-    draft.add_argument("--intent", required=True, help="what you want to find out, in your words")
+    draft.add_argument("--intent", default="", help="what you want to find out, in your words")
     draft.add_argument("--seed-terms", default=None, help="comma-separated terms you already have")
+    draft.add_argument(
+        "--model",
+        default=None,
+        help="draft with this model instead of the planner's, e.g. gpt-6.1-sol",
+    )
+    draft.add_argument("--provider", default=None, help="openai, anthropic or replay (inferred)")
+    draft.add_argument("--reasoning-effort", default=None, help="minimal, low, medium or high")
+    draft.add_argument(
+        "--context-json",
+        default=None,
+        help="the form so far as JSON: title, details, facets, date_range, preferred_types",
+    )
     draft.add_argument(
         "--max-cost-usd", type=float, default=0.25, help="cap for this one model call"
     )
@@ -1590,7 +1690,33 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="serve beyond loopback with no access key (only behind an authenticating proxy)",
     )
+    serve_cmd.add_argument(
+        "--run-scope",
+        default=None,
+        help="list only runs made in this deployment, e.g. docker "
+        "(default: $PHEASANT_LAB_RUN_SCOPE, else every run)",
+    )
     serve_cmd.set_defaults(func=cmd_serve)
+
+    mcp_cmd = subparsers.add_parser(
+        "mcp", help="the console's tools over MCP stdio, for an agent to configure and run the lab"
+    )
+    mcp_cmd.add_argument("--config", default="configs/demo.yaml")
+    mcp_cmd.add_argument("--env-file", default=".env")
+    mcp_cmd.add_argument("--project-root", default=None)
+    mcp_cmd.add_argument("--runs", dest="output_root_dir", default=None)
+    mcp_cmd.add_argument("--run-scope", default=None)
+    mcp_cmd.set_defaults(func=cmd_mcp)
+
+    settings_cmd = subparsers.add_parser(
+        "settings", help="explain every setting: meaning, valid values, recommendation"
+    )
+    common(settings_cmd, mutating=False)
+    settings_cmd.add_argument("--section", default=None)
+    settings_cmd.add_argument("--key", default=None)
+    settings_cmd.add_argument("--advanced", action="store_true", help="include advanced fields")
+    settings_cmd.add_argument("--json", action="store_true")
+    settings_cmd.set_defaults(func=cmd_settings)
 
     return parser
 

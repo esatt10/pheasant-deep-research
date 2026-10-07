@@ -1,0 +1,69 @@
+# ---------------------------------------------------------------------------
+# Pheasant connections the console and its MCP tools offer.
+#
+# Choosing one writes ordinary overrides into the settings draft
+# (`--set transport=... url=... knowledge_base=... source_name=... token_env=...`),
+# so a run's argv still says exactly which region it talked to. Add your own
+# from the console (Configure -> Pheasant connection) or `lab_save_connection`;
+# those go to connections.local.yaml in the local directory and may carry a
+# token, stored 0600 and never shown again.
+#
+# Every streamable_http target below is pheasant-kb >= 0.13.5 with MCP on
+# (`server.mcp.transports.streamable_http: true`), its state path allow-listed
+# (`security.allow_workspace_roots` includes /state, so the lab can register
+# its landing directory as a document_folder source) and, when it sets
+# `security.api_auth.token_env`, the token in the variable named here.
+# ---------------------------------------------------------------------------
+
+connections:
+  mock:
+    description: >-
+      The in-process mock region: offline and free. It measures the mock,
+      never Pheasant, and every report says so.
+    transport: mock
+    knowledge_base: pheasant-lab
+    source_name: swarm-lab-literature
+    token_env: PHEASANT_API_TOKEN
+
+  docker:
+    description: >-
+      The region bundled in this repository's docker-compose.yml (one
+      pheasant 0.13.5 container, role all). Reached by service name from the
+      lab container.
+    transport: streamable_http
+    url: http://pheasant:8765/mcp
+    knowledge_base: pheasant-lab
+    source_name: swarm-lab-literature
+    token_env: PHEASANT_API_TOKEN
+
+  lab-fleet:
+    description: >-
+      pheasant-kb's role-split lab fleet (deploy/compose/docker-compose.pheasant-lab.yml,
+      project `pheasant-lab`). Start the lab with docker-compose.fleet.yml so it
+      joins that project's network; syncs are queued and claimed by its indexer.
+    transport: streamable_http
+    url: http://api:8765/mcp
+    knowledge_base: pheasant-lab
+    source_name: swarm-lab-literature
+    token_env: PHEASANT_API_TOKEN
+
+  local:
+    description: >-
+      A region on this machine's loopback, e.g. `pheasant up` or pheasant-kb's
+      compose files with their default port. From inside the lab container use
+      `host` instead.
+    transport: streamable_http
+    url: http://127.0.0.1:8765/mcp
+    knowledge_base: pheasant-lab
+    source_name: swarm-lab-literature
+    token_env: PHEASANT_API_TOKEN
+
+  host:
+    description: >-
+      A region published on the Docker host's port 8765, reached from inside
+      the lab container.
+    transport: streamable_http
+    url: http://host.docker.internal:8765/mcp
+    knowledge_base: pheasant-lab
+    source_name: swarm-lab-literature
+    token_env: PHEASANT_API_TOKEN

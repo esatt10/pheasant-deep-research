@@ -12,6 +12,13 @@ The call goes through the same budget guard as everything else (reserve the
 worst case, run, reconcile) against a cap of its own, because it happens
 before any run exists to charge it to. Under the ``replay`` provider the draft
 is rule-based and says so.
+
+The drafter may be pointed at a model other than the planner's - the console
+offers GPT-6.1 Sol and GPT-6 Luna on one click - and it reads everything the
+person has already put in the form (title, details, facets, window, preferred
+source types) as context. Its answer *replaces* the form: a draft that merged
+silently into half-edited fields would leave the person unsure which words
+were theirs.
 """
 
 from __future__ import annotations
@@ -23,7 +30,7 @@ from typing import Any
 from ..budget import BUCKETS, CostLedger
 from ..models import ModelProvider, ModelRequest
 from ..promptlib import load as load_prompt
-from ..settings import LabConfig
+from ..settings import LabConfig, RoleModel
 
 DEFAULT_DRAFT_BUDGET_USD = 0.25
 SLUG = re.compile(r"[^a-z0-9]+")
@@ -34,6 +41,63 @@ def slug(text: str, prefix: str = "") -> str:
     return f"{prefix}{body}" if body else ""
 
 
+def drafting_role(
+    config: LabConfig,
+    *,
+    model: str | None = None,
+    provider: str | None = None,
+    reasoning_effort: str | None = None,
+) -> RoleModel:
+    """The planner's role spec, with the model the person chose for the draft."""
+
+    spec = config.role("planner").model_copy()
+    if model:
+        spec.model = model
+        if provider is None:
+            provider = _provider_for(model, spec.provider)
+    if provider:
+        spec.provider = provider
+    if reasoning_effort is not None:
+        spec.reasoning_effort = reasoning_effort or None
+    return spec
+
+
+def _provider_for(model: str, fallback: str) -> str:
+    if model.startswith(("gpt-", "o1", "o3", "o4")):
+        return "openai"
+    if model.startswith("claude-"):
+        return "anthropic"
+    if model.startswith("replay:"):
+        return "replay"
+    return fallback
+
+
+def _context_block(context: dict[str, Any] | None) -> str:
+    """What the person already wrote, as the drafter's context."""
+
+    if not context:
+        return ""
+    lines: list[str] = []
+    if context.get("title"):
+        lines.append(f"Working title: {context['title']}")
+    if context.get("details"):
+        lines.append(f"Further detail from the person:\n{context['details']}")
+    facets = [f for f in context.get("facets") or [] if str((f or {}).get("label") or "").strip()]
+    if facets:
+        lines.append(
+            "Facets they already wrote (keep the ones that fit, sharpen their labels):\n"
+            + "\n".join(f"- {f['label']} (weight {f.get('weight', 1)})" for f in facets)
+        )
+    window = context.get("date_range") or {}
+    if window.get("from") or window.get("to"):
+        lines.append(
+            f"Date window they set: {window.get('from') or 'open'} to {window.get('to') or 'open'}"
+        )
+    if context.get("preferred_types"):
+        lines.append(f"Preferred source types: {', '.join(context['preferred_types'])}")
+    return ("\n".join(lines) + "\n\n") if lines else ""
+
+
 @dataclass
 class TopicDraft:
     intent: str
@@ -42,6 +106,7 @@ class TopicDraft:
     facets: list[dict[str, Any]]
     date_range: dict[str, str | None]
     notes: str
+    details: str | None
     model: str
     provider: str
     deterministic: bool
@@ -58,6 +123,7 @@ class TopicDraft:
             "facets": [dict(f) for f in self.facets],
             "date_range": dict(self.date_range),
             "notes": self.notes,
+            "details": self.details,
             "drafted_by": {
                 "provider": self.provider,
                 "model": self.model,
@@ -77,11 +143,26 @@ def draft_topic(
     seed_terms: list[str] | None = None,
     max_cost_usd: float = DEFAULT_DRAFT_BUDGET_USD,
     max_facets: int = 5,
+    context: dict[str, Any] | None = None,
+    spec: RoleModel | None = None,
 ) -> TopicDraft:
+    context = dict(context or {})
     intent = intent.strip()
     if len(intent) < 12:
-        raise ValueError("describe the intent in a sentence or two; there is nothing to draft from")
-    spec = config.role("planner")
+        # The intent is the brief; with a working title or detail the person
+        # has still said enough to draft from.
+        fallback = ". ".join(
+            text
+            for text in (str(context.get(key) or "").strip(" .") for key in ("title", "details"))
+            if text
+        )
+        if len(fallback) < 12:
+            raise ValueError(
+                "describe the intent in a sentence or two (or give a title and some detail); "
+                "there is nothing to draft from"
+            )
+        intent = fallback
+    spec = spec or config.role("planner")
     ledger = CostLedger(
         total_budget_usd=max_cost_usd,
         allocation={bucket: (1.0 if bucket == "planning" else 0.0) for bucket in BUCKETS},
@@ -96,12 +177,18 @@ def draft_topic(
         system=load_prompt("topic-drafter"),
         user=(
             f"Intent, in the person's own words:\n{intent}\n\n"
+            f"{_context_block(context)}"
             f"Seed terms they already have: {', '.join(given) or '(none)'}\n"
             f"Collection profile: {config.collection.profile}\n"
             f"Produce at most {max_facets} facets. Return the JSON object described above "
             "and nothing else."
         ),
-        context={"intent": intent, "seed_terms": given, "max_facets": max_facets},
+        context={
+            "intent": intent,
+            "seed_terms": given,
+            "max_facets": max_facets,
+            "form": {k: v for k, v in context.items() if v},
+        },
         max_output_tokens=min(spec.max_output_tokens, 2000),
         temperature=spec.temperature,
         seed=config.experiment.seed,
@@ -153,6 +240,7 @@ def draft_topic(
         facets=facets,
         date_range={"from": window.get("from") or None, "to": window.get("to") or None},
         notes=str(data.get("notes") or ""),
+        details=str(data.get("details") or context.get("details") or "").strip() or None,
         model=response.model,
         provider=response.provider,
         deterministic=response.deterministic,

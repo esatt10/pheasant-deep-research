@@ -27,8 +27,16 @@ from typing import Any
 import yaml
 
 from ..settings import Topic, TopicsFile, load_config
+from .state import local_file
 
+#: Where topics are written by default; ``$PHEASANT_LAB_LOCAL_DIR`` moves it.
 LOCAL_TOPICS = "configs/topics.local.yaml"
+
+
+def _local(project_root: Path) -> tuple[Path, str]:
+    return local_file(project_root, "topics.local.yaml")
+
+
 OVERRIDE_KEY = "experiment.topics_file"
 
 #: Topic and facet ids land in record ids, file names and report headings.
@@ -56,8 +64,8 @@ def topic_rows(project_root: Path, config: Path, overrides: dict[str, str]) -> d
         shown = str(source)
     return {
         "topics_file": shown,
-        "local_file": LOCAL_TOPICS,
-        "override": f"{OVERRIDE_KEY}={LOCAL_TOPICS}",
+        "local_file": _local(project_root)[1],
+        "override": f"{OVERRIDE_KEY}={_local(project_root)[1]}",
         "topics": [_dump(topic) for topic in resolved.topics],
     }
 
@@ -102,26 +110,56 @@ def add_topic(
     else:
         topics.append(topic)
 
-    target = (project_root / LOCAL_TOPICS).resolve()
+    target, local = _local(project_root)
     document = {"topics": [_dump(row) for row in TopicsFile(topics=topics).topics]}
     _write(target, HEADER + "\n" + yaml.safe_dump(document, sort_keys=False, allow_unicode=True))
 
     # Resolve again against what was written: the CLI is the judge.
-    pointed = {**overrides, OVERRIDE_KEY: LOCAL_TOPICS}
+    pointed = {**overrides, OVERRIDE_KEY: local}
     load_config(config, overrides=pointed, project_root=project_root, env_file=".env")
     return {
         "topic": _dump(topic),
         "replaced": bool(existing),
-        "topics_file": LOCAL_TOPICS,
-        "override": f"{OVERRIDE_KEY}={LOCAL_TOPICS}",
+        "topics_file": local,
+        "override": f"{OVERRIDE_KEY}={local}",
         "count": len(topics),
+    }
+
+
+def delete_topic(
+    project_root: Path, config: Path, overrides: dict[str, str], topic_id: str
+) -> dict[str, Any]:
+    """Write the current topics less ``topic_id`` to the local file.
+
+    The same single write as :func:`add_topic`, so the shipped topics files
+    are never touched: a topic removed here is removed from what this
+    console's runs see, and a run pointed at the shipped file still has it.
+    """
+
+    current = load_config(config, overrides=overrides, project_root=project_root, env_file=".env")
+    remaining = [row for row in current.topics if row.id != topic_id]
+    if len(remaining) == len(current.topics):
+        raise KeyError(topic_id)
+    if not remaining:
+        raise ValueError("refusing to remove the last topic; a run needs at least one")
+    target, local = _local(project_root)
+    document = {"topics": [_dump(row) for row in remaining]}
+    _write(target, HEADER + "\n" + yaml.safe_dump(document, sort_keys=False, allow_unicode=True))
+    pointed = {**overrides, OVERRIDE_KEY: local}
+    load_config(config, overrides=pointed, project_root=project_root, env_file=".env")
+    return {
+        "deleted": topic_id,
+        "topics_file": local,
+        "override": f"{OVERRIDE_KEY}={local}",
+        "count": len(remaining),
     }
 
 
 def _dump(topic: Topic) -> dict[str, Any]:
     row = topic.model_dump(mode="json", by_alias=True)
-    if row.get("intent") is None:
-        row.pop("intent", None)
+    for added in ("intent", "details"):
+        if row.get(added) is None:
+            row.pop(added, None)
     return row
 
 
@@ -130,6 +168,7 @@ def _clean(payload: dict[str, Any]) -> dict[str, Any]:
 
     data = dict(payload)
     data["intent"] = str(data.get("intent") or "").strip() or None
+    data["details"] = str(data.get("details") or "").strip() or None
     data["seed_terms"] = [str(t).strip() for t in data.get("seed_terms") or [] if str(t).strip()]
     window = dict(data.get("date_range") or {})
     data["date_range"] = {key: (window.get(key) or None) for key in ("from", "to")}

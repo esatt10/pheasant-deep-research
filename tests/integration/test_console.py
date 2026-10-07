@@ -387,7 +387,8 @@ def test_the_api_lists_and_folds_runs(console: str, fleet_run: Path) -> None:
     assert status == 200 and runs[0]["run_id"] == fleet_run.name
     listed = list_runs(fleet_run.parent)
     assert [
-        {k: v for k, v in row.items() if k not in {"live", "resumable"}} for row in runs
+        {k: v for k, v in row.items() if k not in {"live", "resumable", "label", "notes", "kept"}}
+        for row in runs
     ] == listed
     assert runs[0]["live"] is False and runs[0]["resumable"] is (not listed[0]["complete"])
 

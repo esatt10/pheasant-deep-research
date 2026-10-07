@@ -32,6 +32,7 @@ import threading
 import time
 import uuid
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -64,6 +65,8 @@ class Launch:
     output: deque = field(default_factory=lambda: deque(maxlen=400))
     process: subprocess.Popen | None = None
     stop_requested: bool = False
+    #: A person's name for the run this launch makes; applied once the run exists.
+    label: str | None = None
 
     def record(self) -> dict[str, Any]:
         """What is persisted: everything but the live handles."""
@@ -82,6 +85,7 @@ class Launch:
             "pid": self.pid,
             "log": self.log,
             "stop_requested": self.stop_requested,
+            "label": self.label,
         }
 
     def as_dict(self) -> dict[str, Any]:
@@ -119,9 +123,20 @@ def status_for(code: int, *, stopped: bool) -> str:
 
 
 class Launcher:
-    def __init__(self, project_root: Path, output_root: Path) -> None:
+    def __init__(
+        self,
+        project_root: Path,
+        output_root: Path,
+        *,
+        extra_env: Callable[[], dict[str, str]] | None = None,
+        on_run: Callable[[str, Launch], None] | None = None,
+    ) -> None:
         self.project_root = project_root
         self.output_root = output_root
+        #: Tokens stored for connections, handed to every child by name.
+        self.extra_env = extra_env
+        #: Called once a launch's run directory exists (to apply its label).
+        self.on_run = on_run
         self.home = output_root / ".console" / "launches"
         self._launches: dict[str, Launch] = {}
         self._lock = threading.Lock()
@@ -138,6 +153,7 @@ class Launcher:
         arms: str | None = None,
         run_id: str | None = None,
         max_cost_usd: float | None = None,
+        label: str | None = None,
     ) -> Launch:
         config_path = self._config_path(config)
         # Relative to the project root, which is the child's cwd: the argv a
@@ -192,6 +208,7 @@ class Launcher:
             run_id=run_id,
             step=argv[0],
             log=str(self.home / f"{launch_id}.log"),
+            label=(label or "").strip() or None,
         )
         with self._lock:
             self._launches[launch.launch_id] = launch
@@ -277,6 +294,8 @@ class Launcher:
 
     def _env(self) -> dict[str, str]:
         env = dict(os.environ)
+        if self.extra_env is not None:
+            env.update(self.extra_env())
         env["PYTHONUNBUFFERED"] = "1"
         return env
 
@@ -328,15 +347,23 @@ class Launcher:
                 launch.run_id = self._new_run(before)
                 if launch.run_id:
                     self._save(launch)
+                    self._announce(launch)
             time.sleep(0.25)
         if launch.run_id is None:
             launch.run_id = self._new_run(before)
+            if launch.run_id:
+                self._announce(launch)
         code = process.wait() if process is not None else -1
         launch.exit_code = code
         launch.finished_at = time.time()
         launch.status = status_for(code, stopped=launch.stop_requested)
         self._tail(launch)
         self._save(launch)
+
+    def _announce(self, launch: Launch) -> None:
+        if self.on_run is not None and launch.run_id and launch.kind not in SINGLE_COMMANDS:
+            with contextlib.suppress(Exception):
+                self.on_run(launch.run_id, launch)
 
     def _follow(self, launch: Launch) -> None:
         """A child a previous console started: poll it, since it is not ours to wait on."""
@@ -389,6 +416,7 @@ class Launcher:
                 pid=row.get("pid"),
                 log=row.get("log"),
                 stop_requested=bool(row.get("stop_requested")),
+                label=row.get("label"),
             )
             if launch.status == "running":
                 if _alive(launch.pid):

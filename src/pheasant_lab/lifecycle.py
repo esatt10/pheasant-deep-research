@@ -156,6 +156,10 @@ def environment_fingerprint() -> dict[str, Any]:
         "implementation": platform.python_implementation(),
         "platform": platform.platform(terse=True),
         "machine": platform.machine(),
+        # Where the run was made: `docker` inside the lab image (its
+        # Dockerfile sets PHEASANT_LAB_DEPLOYMENT), `local` otherwise. A
+        # console started with a run scope lists only runs made there.
+        "deployment": os.environ.get("PHEASANT_LAB_DEPLOYMENT") or "local",
     }
 
 

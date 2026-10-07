@@ -947,8 +947,27 @@ def _config_of(manifest: dict[str, Any]) -> str | None:
     return None
 
 
-def list_runs(output_root: Path) -> list[dict[str, Any]]:
-    """Every run under ``output_root``, newest first, with what a list needs."""
+def run_deployment(manifest: dict[str, Any]) -> str:
+    """Where a run was made, from its manifest; runs from before the stamp are ``local``."""
+
+    return str((manifest.get("environment") or {}).get("deployment") or "local")
+
+
+def in_scope(root: Path, scope: str | None) -> bool:
+    """Does the run at ``root`` belong to a console scoped to ``scope``?"""
+
+    if not scope:
+        return True
+    return run_deployment(_read_json(root / "run-manifest.json")) == scope
+
+
+def list_runs(output_root: Path, scope: str | None = None) -> list[dict[str, Any]]:
+    """Every run under ``output_root``, newest first, with what a list needs.
+
+    ``scope`` keeps only runs whose manifest says they were made in that
+    deployment (``docker``): a console in the lab image lists the runs made
+    in the image, not whatever a mounted directory happens to hold.
+    """
 
     rows = []
     if not output_root.is_dir():
@@ -956,6 +975,8 @@ def list_runs(output_root: Path) -> list[dict[str, Any]]:
     for root in output_root.glob("run-*"):
         manifest = _read_json(root / "run-manifest.json")
         if not manifest:
+            continue
+        if scope and run_deployment(manifest) != scope:
             continue
         state = _read_json(root / "state.json")
         events = root / "raw" / "events.jsonl"
@@ -981,6 +1002,7 @@ def list_runs(output_root: Path) -> list[dict[str, Any]]:
                 "reported": (root / "reports" / "summary.md").is_file(),
                 "arms": manifest.get("arms"),
                 "cost_budget_usd": manifest.get("cost_budget_usd"),
+                "deployment": run_deployment(manifest),
                 "mock": "mock" in str((manifest.get("pheasant") or {}).get("transport", ""))
                 or (root / "mock-region.json").is_file(),
                 # What a resume needs to reproduce the run's own configuration:
