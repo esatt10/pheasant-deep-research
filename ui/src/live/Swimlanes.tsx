@@ -170,7 +170,12 @@ export function Swimlanes({
           const y = AXIS_H + row * rowHeight;
           const selected = lane.id === selectedLane;
           return (
-            <g key={lane.id} onClick={() => onSelectLane?.(lane.id)} style={{ cursor: onSelectLane ? "pointer" : "default" }}>
+            <g
+              key={lane.id}
+              className={selectedLane && !selected ? "dimmed" : undefined}
+              onClick={() => onSelectLane?.(lane.id)}
+              style={{ cursor: onSelectLane ? "pointer" : "default" }}
+            >
               {selected ? <rect x={0} y={y} width={width} height={rowHeight} fill="var(--accent-soft)" opacity={0.7} /> : null}
               <line x1={0} x2={width} y1={y + rowHeight} y2={y + rowHeight} stroke="var(--border)" />
               <rect x={8} y={y + rowHeight / 2 - 4} width={8} height={8} rx={2} fill={laneColor(lane)} />

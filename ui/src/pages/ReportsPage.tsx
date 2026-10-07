@@ -19,6 +19,7 @@ export function ReportsPage({ view = "reports" }: { view?: "reports" | "traces" 
   const [names, setNames] = useState<string[]>([]);
   const [name, setName] = useState("summary.md");
   const [html, setHtml] = useState("");
+  const [loadingReport, setLoadingReport] = useState(false);
 
   useEffect(() => {
     if (!runId && runs.data?.length)
@@ -27,10 +28,13 @@ export function ReportsPage({ view = "reports" }: { view?: "reports" | "traces" 
 
   useEffect(() => {
     if (!runId || view !== "reports") return;
-    void api.reports(runId).then((r) => {
-      setNames(r.reports);
-      if (!r.reports.includes(name) && r.reports[0]) setName(r.reports[0]);
-    });
+    void api
+      .reports(runId)
+      .then((r) => {
+        setNames(r.reports);
+        if (!r.reports.includes(name) && r.reports[0]) setName(r.reports[0]);
+      })
+      .catch(() => setNames([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId, view]);
 
@@ -39,7 +43,12 @@ export function ReportsPage({ view = "reports" }: { view?: "reports" | "traces" 
       setHtml("");
       return;
     }
-    void api.report(runId, name).then((r) => setHtml(DOMPurify.sanitize(marked.parse(r.markdown) as string)));
+    setLoadingReport(true);
+    void api
+      .report(runId, name)
+      .then((r) => setHtml(DOMPurify.sanitize(marked.parse(r.markdown) as string)))
+      .catch((caught: Error) => setHtml(`<p class="error">${DOMPurify.sanitize(caught.message)}</p>`))
+      .finally(() => setLoadingReport(false));
   }, [runId, name, names]);
 
   return (
@@ -79,7 +88,13 @@ export function ReportsPage({ view = "reports" }: { view?: "reports" | "traces" 
             </button>
           ))}
         </div>
-        <div className="card card__body markdown fit-scroll" dangerouslySetInnerHTML={{ __html: html }} />
+        {loadingReport && !html ? (
+          <div className="card card__body fit-scroll">
+            {Array.from({ length: 8 }, (_, i) => <div key={i} className="skel skel-row" style={{ width: `${95 - ((i * 13) % 40)}%`, marginLeft: 0 }} />)}
+          </div>
+        ) : (
+          <div className={`card card__body markdown fit-scroll${loadingReport ? " is-refreshing" : ""}`} dangerouslySetInnerHTML={{ __html: html }} />
+        )}
       </div>
       )}
     </div>

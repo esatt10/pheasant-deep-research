@@ -197,6 +197,24 @@ make ui && uv run pheasant-lab serve                  # the console, http://127.
   report; the run is not refused, because the paired difference is still a
   measurement of *something*, and the report says what.
 
+- **One selection drives the live page.** `ui/src/live/focus.ts` is the
+  whole vocabulary: a focus is a branch or an arm, every panel reads it, and
+  the feed, custody, facets and both visuals filter or dim from it. Panels do
+  not keep a selection of their own, so selecting in one place can never
+  disagree with what another shows. Deselecting is always available four
+  ways (again, empty canvas, the ×, `Esc`).
+- **The console has a key, like a fleet.** `PHEASANT_LAB_CONSOLE_TOKEN`
+  guards every `/api` call; the shell and `/api/auth` stay public so the page
+  can ask for it, and a console beyond loopback with no key refuses to start.
+  The live stream is read with `fetch`, not `EventSource`, because an
+  `EventSource` cannot send a header and a key in a URL ends up in logs.
+- **Logs are kept whole or deleted whole.** `console/logs.py` deletes launch
+  logs, a run's rebuildable projection or an entire run - never part of a raw
+  trace (rule 5) and never anything a launch is writing - and audits every
+  deletion. Retention defaults to keeping everything; the policy is console
+  bookkeeping under `.console/`, not experiment configuration, so it never
+  moves a digest. Run logging (`logging.yaml`) is configuration and does.
+
 ## 5. Traps this repository has already fallen into
 
 - **A `Retry-After: 0` is a server saying "immediately".** `retry_after or
@@ -337,3 +355,23 @@ make ui && uv run pheasant-lab serve                  # the console, http://127.
   service answers `completed`, and a capture taken against one records the
   wrong shape. `scripts/capture_pheasant_fixtures.py --queued-sync` needs the
   graph-service replica for that reason.
+- **A setting with no reader looked like a working one for the whole life of
+  the repo.** `logging.yaml`'s `level`, `format` and `file` were declared,
+  documented and shipped, and every stage logged at INFO, as text, to stderr
+  regardless. `logsetup.configure_logging` is the reader now; a relative
+  `file` lands in the run directory, and it is excluded from checksums
+  because it grows after a stage has checksummed: digested, `verify` would
+  call every run that set it tampered with.
+- **A key entered after a refused load does not re-run the load.** `/live`
+  resolves "the latest run" once on mount; on a keyed console that call was
+  refused before the key existed, so the page sat on "no runs yet" after a
+  correct key. The routed page remounts when the key changes. Found by
+  driving the real console in a browser, as was the next one.
+- **A floating notice covers whatever is under it.** The live page's toasts
+  sat bottom-left over the scrubber and the folded bottom strip's toggle,
+  and moving them over the canvas only covered a branch instead. They are a
+  strip in the layout now, which moves things down a line and covers nothing.
+- **`answered` already counts abstentions.** The arm bars added `abstained`
+  to it and read "28/14" for the prior-only arm, which abstains on every
+  question. A count's definition belongs next to the count; it is commented
+  at both places that read it now.

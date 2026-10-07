@@ -149,6 +149,30 @@ never selects the node it ends on.
 
 ![The swimlanes, zoomed to three seconds of the run](images/live-swimlanes-zoom.png)
 
+**Select, and everything filters.** Click a research branch (on the
+constellation, its lane, the swarm tree or an event) or an arm (its bar in the
+swarm tree, its dot under the region, or its lane). The event stream narrows
+to that actor's events, the constellation and the swimlanes dim everything
+else, custody and facet coverage narrow to the branch's own sources, and the
+replay density bar marks where its events fall. **◎** zooms the constellation
+to the selection. Deselect by clicking it again, clicking empty canvas, the
+**×** on the chip in the run head or the stream, or **Esc**.
+
+**Collapse and expand.** The swarm pane and the event stream fold to a spine
+(⇤ / ⇥) and the budget/facets/custody row folds to a one-line summary; the
+browser remembers which. **⤢** expands the visual to the whole page and **Esc**
+brings the layout back.
+
+**Progress.** A bar under the run head fills with the run's phases and the
+active one's own evidence (answers recorded of answers due while evaluating;
+documents indexed of discovered while collecting), the active phase spins
+while the run is live, each arm has its own answers-due bar, and the stream
+says when it is connecting, reconnecting or waiting for the access key.
+Region notices sit in a strip under the visual's header instead of floating
+over it; good news fades on its own, warnings stay until dismissed. A thin bar
+under the top bar shows any request a person is waiting on, and pages show
+their own shape while the first answer arrives.
+
 The replay scrubber folds the same trace at any earlier sequence number.
 
 ![Replaying a run, in the dark theme](images/live-replay-dark.png)

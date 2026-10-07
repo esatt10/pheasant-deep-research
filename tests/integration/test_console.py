@@ -393,6 +393,16 @@ def test_the_api_lists_and_folds_runs(console: str, fleet_run: Path) -> None:
 
     status, view = _get(f"{console}/api/runs/{fleet_run.name}")
     assert status == 200 and view["run"]["run_id"] == fleet_run.name
+    # The progress bars' denominator: every question, once per repetition.
+    assert view["run"]["repetitions"] == 1
+    # `answered` counts every answer, abstentions included: never more
+    # answers than are due, which is what the arm bars draw.
+    for arm in view["arms"]:
+        assert arm["abstained"] <= arm["answered"] <= view["questions_total"]
+    # The mock describes the lab's source after the barrier, like 0.13.4.
+    inventory = view["region"]["inventory"]
+    assert inventory["disposition"] == "consistent"
+    assert inventory["region_documents"] == inventory["receipts_indexed"] > 0
 
     status, page = _get(f"{console}/api/runs/{fleet_run.name}/events?after=0&limit=5")
     assert [row["sequence"] for row in page["events"]] == [1, 2, 3, 4, 5]

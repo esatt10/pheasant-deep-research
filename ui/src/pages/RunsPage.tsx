@@ -168,6 +168,7 @@ export function RunsPage() {
             ))}
           </tbody>
         </table>
+        {runs.loading ? Array.from({ length: 5 }, (_, i) => <div key={i} className="skel skel-row" style={{ width: `${92 - i * 8}%` }} />) : null}
         {runs.data && runs.data.length === 0 ? (
           <div className="empty">No runs yet. Configure one and launch it — the offline demo costs nothing.</div>
         ) : null}

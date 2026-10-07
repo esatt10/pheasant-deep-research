@@ -135,6 +135,7 @@ export interface RunModel {
     finished: boolean;
     phases: Phase[];
     arms_configured: string[];
+    repetitions?: number;
     replay_of?: number;
   };
   agents: Agent[];

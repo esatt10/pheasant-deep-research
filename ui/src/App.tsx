@@ -27,6 +27,10 @@ export function App() {
   const [access, setAccess] = useState<AccessState>();
   const [askKey, setAskKey] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Bumped when the access key changes, to remount the page: a page's
+  // one-off loads (Live resolving "the latest run", a report's first fetch)
+  // ran before the key existed and were refused, and would not run again.
+  const [keyEpoch, setKeyEpoch] = useState(0);
   const setConfig = (value: string) => {
     setConfigState(value);
     try {
@@ -47,7 +51,10 @@ export function App() {
         })
         .catch(() => setAccess(undefined));
     check();
-    const offChanged = onAuthChanged(check);
+    const offChanged = onAuthChanged(() => {
+      check();
+      setKeyEpoch((n) => n + 1);
+    });
     const offRequired = onAuthRequired(() => {
       setAccess((current) => (current ? { ...current, authenticated: false } : current));
       setAskKey(true);
@@ -76,7 +83,7 @@ export function App() {
     <div className="app">
       <TopBar config={config} cost={cost} access={access} onKey={() => setAskKey(true)} />
       <div className={`loadbar${busy ? " loadbar--on" : ""}`} role="progressbar" aria-hidden={!busy} aria-label="Loading" />
-      <main className="app__main">
+      <main className="app__main" key={keyEpoch}>
         <Routes>
           <Route path="/" element={<RunsPage />} />
           <Route path="/configure" element={<ConfigurePage config={config} onConfig={setConfig} />} />

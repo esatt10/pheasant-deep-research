@@ -356,29 +356,44 @@ function RunRow({
               </span>
             ))}
           </div>
-          {[
-            { title: "Logs and traces", files: logFiles },
-            { title: "Everything else readable", files: otherFiles },
-          ].map((group) =>
-            group.files.length ? (
-              <div key={group.title} style={{ marginTop: 8 }}>
-                <div className="eyebrow">{group.title}</div>
-                {group.files.map((file) => (
-                  <button
-                    key={file.path}
-                    className={`tnode${selectedPath === file.path ? " tnode--sel" : ""}`}
-                    onClick={() => onOpen(file.path)}
-                  >
-                    <span className="name mono">{file.path}</span>
-                    <span className="meta">{bytes(file.size_bytes)}</span>
-                  </button>
-                ))}
-              </div>
-            ) : null,
-          )}
+          {logFiles.length ? (
+            <div style={{ marginTop: 8 }}>
+              <div className="eyebrow">Logs and traces</div>
+              {logFiles.map((file) => (
+                <FileButton key={file.path} file={file} selected={selectedPath === file.path} onOpen={onOpen} />
+              ))}
+            </div>
+          ) : null}
+          {otherFiles.length ? (
+            <details style={{ marginTop: 8 }} open={otherFiles.some((f) => f.path === selectedPath)}>
+              <summary className="eyebrow" style={{ cursor: "pointer" }}>
+                Everything else readable · {otherFiles.length} file(s)
+              </summary>
+              {otherFiles.map((file) => (
+                <FileButton key={file.path} file={file} selected={selectedPath === file.path} onOpen={onOpen} />
+              ))}
+            </details>
+          ) : null}
         </div>
       ) : null}
     </div>
+  );
+}
+
+function FileButton({
+  file,
+  selected,
+  onOpen,
+}: {
+  file: { path: string; size_bytes: number };
+  selected: boolean;
+  onOpen: (path: string) => void;
+}) {
+  return (
+    <button className={`tnode${selected ? " tnode--sel" : ""}`} onClick={() => onOpen(file.path)}>
+      <span className="name mono">{file.path}</span>
+      <span className="meta">{bytes(file.size_bytes)}</span>
+    </button>
   );
 }
 

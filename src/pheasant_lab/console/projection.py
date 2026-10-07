@@ -652,6 +652,14 @@ class LiveModel:
                 "finished": self.finished,
                 "phases": phases,
                 "arms_configured": list(self.manifest.get("arms") or []),
+                # Each question is answered this many times per arm, so it is
+                # the progress bars' denominator, with questions_total.
+                "repetitions": int(
+                    ((self.manifest.get("resolved_config") or {}).get("replay") or {}).get(
+                        "repetitions"
+                    )
+                    or 1
+                ),
             },
             "agents": [
                 agent.as_dict(self._labelled_subtopics())
