@@ -15,7 +15,7 @@ import { Traces } from "../reports/Traces";
 export function ReportsPage({ view = "reports" }: { view?: "reports" | "traces" }) {
   const { runId, actor } = useParams();
   const navigate = useNavigate();
-  const runs = usePoll<RunRow[]>(api.runs, 10000);
+  const runs = usePoll<RunRow[]>(api.runsQuiet, 10000);
   const [names, setNames] = useState<string[]>([]);
   const [name, setName] = useState("summary.md");
   const [html, setHtml] = useState("");

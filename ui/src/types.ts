@@ -410,3 +410,69 @@ export interface TopicDraft extends TopicDoc {
     output_tokens: number;
   };
 }
+
+/* ---- logs (console/logs.py) -------------------------------------------- */
+
+export interface RetentionPolicy {
+  launch_log_days: number | null;
+  max_launch_logs: number | null;
+  projection_days: number | null;
+  run_days: number | null;
+  max_runs: number | null;
+  protect_reported: boolean;
+  kept_runs: string[];
+  auto_apply: boolean;
+}
+
+export interface RetentionAction {
+  kind: "launch_log" | "run" | "projection";
+  target: string;
+  reason: string;
+  skipped?: string;
+  freed_bytes?: number;
+}
+
+export interface AuditRow {
+  at: number;
+  kind: RetentionAction["kind"];
+  target: string;
+  freed_bytes: number;
+  reason: string;
+}
+
+export interface LogInventory {
+  output_root: string;
+  totals: { launch_logs: number; runs: number; projections: number };
+  launches: {
+    launch_id: string;
+    kind: string;
+    status: Launch["status"];
+    run_id: string | null;
+    started_at: number;
+    finished_at: number | null;
+    size_bytes: number;
+    deletable: boolean;
+  }[];
+  runs: {
+    run_id: string;
+    updated_at: number;
+    size_bytes: number;
+    categories: Record<string, number>;
+    files: { path: string; size_bytes: number }[];
+    live: boolean;
+    reported: boolean;
+    kept: boolean;
+  }[];
+  policy: RetentionPolicy;
+  audit: AuditRow[];
+}
+
+export interface LogPage {
+  lines: { n: number; text: string }[];
+  offset: number;
+  limit: number;
+  matched: number;
+  total_lines: number;
+  size_bytes: number;
+  has_more: boolean;
+}

@@ -36,7 +36,10 @@ def base_url(mcp_url: str) -> str | None:
 
 
 def probe_region(
-    pheasant: dict[str, Any], *, token_env: str = "PHEASANT_API_TOKEN"
+    pheasant: dict[str, Any],
+    *,
+    token_env: str = "PHEASANT_API_TOKEN",
+    environ: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     transport = pheasant.get("transport")
     if transport == "mock":
@@ -71,7 +74,7 @@ def probe_region(
             ],
         }
     headers = {}
-    token = os.environ.get(token_env)
+    token = (environ if environ is not None else os.environ).get(token_env)
     if token:
         headers["Authorization"] = f"Bearer {token}"
     result: dict[str, Any] = {"transport": transport, "base_url": base, "notices": []}

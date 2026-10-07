@@ -4,9 +4,13 @@
 # ---------------------------------------------------------------------------
 
 logging:
-  level: INFO
-  format: text          # text | json
-  file: null            # null means stderr only
+  # Applied to every stage's process. `-v` on the command line still wins.
+  level: INFO           # DEBUG | INFO | WARNING | ERROR
+  format: text          # text | json (one object per line)
+  # null means stderr only. A relative path is inside the run directory
+  # (e.g. logs/lab.log), so a run's diagnostics travel with it and the
+  # console's Logs page lists them.
+  file: null
 
 tracing:
   # Raw JSONL is append-only and authoritative. DuckDB is a disposable

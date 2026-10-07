@@ -15,6 +15,8 @@ it.
 
 from __future__ import annotations
 
+import hmac
+import ipaddress
 import json
 import mimetypes
 import os
@@ -28,8 +30,9 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from pydantic import ValidationError
 
-from ..settings import ConfigError, load_config
+from ..settings import ConfigError, load_config, load_dotenv
 from .launcher import Launcher
+from .logs import LogControl
 from .projection import RunWatcher, fold_until, list_runs
 from .region import probe_region
 from .topics import add_topic, topic_rows
@@ -40,6 +43,25 @@ from .traces import RunTraces
 STREAM_INTERVAL = 0.5
 #: Events sent in one ``events`` message; a backfill arrives in pages.
 STREAM_PAGE = 400
+#: Where the console's own access key is read from, by default.
+TOKEN_ENV = "PHEASANT_LAB_CONSOLE_TOKEN"
+#: Answered without a key: the shell that asks for one, and whether one is needed.
+PUBLIC_API = frozenset({"/api/auth"})
+
+
+class Unauthenticated(RuntimeError):
+    """A console bound beyond loopback with no key: it can start paid runs."""
+
+
+def is_loopback(host: str) -> bool:
+    """Only an address no other machine can reach. ``""`` binds every interface."""
+
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 class Console:
@@ -58,8 +80,34 @@ class Console:
         self.default_config = default_config
         self.ui_dist = ui_dist
         self.launcher = Launcher(project_root, output_root)
+        self.logs = LogControl(output_root, self.launcher)
         self._watchers: dict[str, RunWatcher] = {}
         self._lock = threading.Lock()
+        #: The console's own access key, or ``None`` for an open (loopback) console.
+        self.token: bytes | None = None
+        self.env_file: str | None = ".env"
+
+    def environment(self) -> dict[str, str]:
+        """The process environment over the project's ``.env``.
+
+        The same precedence ``load_config`` uses, so a secret the README says
+        to put in ``.env`` reaches the console's own probes too - not only the
+        runs it launches, which read ``.env`` themselves.
+        """
+
+        values = load_dotenv(self.project_root / self.env_file) if self.env_file else {}
+        return {**values, **os.environ}
+
+    def authorized(self, header: str | None) -> bool:
+        if self.token is None:
+            return True
+        scheme, _, supplied = (header or "").partition(" ")
+        # Bytes, as pheasant-kb compares them: a header byte above 127 makes
+        # ``compare_digest`` raise on str operands - a 500 from the guard.
+        # ``http.server`` decodes headers as latin-1, so encoding back the same
+        # way recovers exactly the bytes the client sent.
+        raw = supplied.strip().encode("latin-1", "replace")
+        return scheme.lower() == "bearer" and hmac.compare_digest(raw, self.token)
 
     def watcher(self, run_id: str) -> RunWatcher:
         root = (self.output_root / run_id).resolve()
@@ -71,6 +119,10 @@ class Console:
                 watcher = self._watchers[run_id] = RunWatcher(root)
             watcher.refresh()
             return watcher
+
+    def forget_run(self, run_id: str) -> None:
+        with self._lock:
+            self._watchers.pop(run_id, None)
 
     def configs(self) -> list[dict[str, Any]]:
         rows = []
@@ -117,6 +169,7 @@ class Console:
                     "arms",
                     "replay",
                     "budget",
+                    "logging",
                 )
             },
             "pheasant": {
@@ -124,6 +177,7 @@ class Console:
                 "url": resolved.pheasant.url,
                 "knowledge_base": resolved.pheasant.knowledge_base,
                 "source_name": resolved.pheasant.source_name,
+                "token_env": resolved.pheasant.token_env,
                 "mock_claim_seconds": resolved.pheasant.mock_claim_seconds,
                 "capabilities": {
                     name: {"tool": spec.tool, "required": spec.required}
@@ -138,6 +192,22 @@ class Console:
             "unresolved_env": resolved.unresolved_env,
             "source_files": resolved.source_files,
         }
+
+
+def _asdict(policy: Any) -> dict[str, Any]:
+    from dataclasses import asdict
+
+    return asdict(policy)
+
+
+def _read_options(query: dict[str, str]) -> dict[str, Any]:
+    return {
+        "offset": int(query.get("offset", 0) or 0),
+        "limit": int(query.get("limit", 500) or 500),
+        "query": query.get("q") or None,
+        "level": query.get("level") or None,
+        "tail": query.get("tail") in {"1", "true"},
+    }
 
 
 def _pairs(overrides: list[str]) -> dict[str, str]:
@@ -165,15 +235,44 @@ def make_handler(console: Console) -> type[BaseHTTPRequestHandler]:
                 super().log_message(format, *args)
 
         # -- dispatch ------------------------------------------------------
+        def _guard(self, path: str) -> bool:
+            """Refuse an unauthenticated ``/api`` call when the console has a key.
+
+            The built shell and its assets stay public - the bundle cannot
+            carry the key, so the page that asks for it has to load without
+            it - and ``/api/auth`` says whether a key is needed. Everything
+            else under ``/api`` (runs, traces, launches, logs) needs it.
+            """
+
+            if not path.startswith("/api/") or path in PUBLIC_API:
+                return True
+            if console.authorized(self.headers.get("Authorization")):
+                return True
+            self._json(
+                {"detail": "this console requires an access key"},
+                status=HTTPStatus.UNAUTHORIZED,
+                headers={"WWW-Authenticate": 'Bearer realm="pheasant-lab console"'},
+            )
+            return False
+
         def do_GET(self) -> None:
             url = urlparse(self.path)
             multi = parse_qs(url.query)
             query = {k: v[-1] for k, v in multi.items()}
             parts = [p for p in url.path.split("/") if p]
+            if not self._guard(url.path):
+                return None
             try:
                 if parts[:1] != ["api"]:
                     return self._static(url.path)
                 route = parts[1:]
+                if route == ["auth"]:
+                    return self._json(
+                        {
+                            "required": console.token is not None,
+                            "authenticated": console.authorized(self.headers.get("Authorization")),
+                        }
+                    )
                 if route == ["runs"]:
                     live = console.launcher.live_runs()
                     rows = list_runs(console.output_root)
@@ -213,9 +312,29 @@ def make_handler(console: Console) -> type[BaseHTTPRequestHandler]:
                     return self._json(console.launcher.list())
                 if len(route) == 2 and route[0] == "launches":
                     return self._json(console.launcher.get(route[1]).as_dict())
+                if route == ["logs"]:
+                    return self._json(console.logs.inventory())
+                if route == ["logs", "retention"]:
+                    logs = console.logs
+                    return self._json({"policy": _asdict(logs.policy()), "plan": logs.plan()})
+                if len(route) == 3 and route[:2] == ["logs", "launches"]:
+                    return self._json(console.logs.read_launch(route[2], **_read_options(query)))
+                if len(route) == 3 and route[:2] == ["logs", "runs"]:
+                    return self._json(
+                        console.logs.read_run_file(
+                            route[2], query.get("path", ""), **_read_options(query)
+                        )
+                    )
                 if route == ["region"]:
                     config = query.get("config") or console.default_config
-                    return self._json(probe_region(console.resolve(config, [])["pheasant"]))
+                    pheasant = console.resolve(config, [])["pheasant"]
+                    return self._json(
+                        probe_region(
+                            pheasant,
+                            token_env=pheasant.get("token_env") or "PHEASANT_API_TOKEN",
+                            environ=console.environment(),
+                        )
+                    )
                 return self._error(HTTPStatus.NOT_FOUND, f"no route {url.path}")
             except KeyError as exc:
                 return self._error(HTTPStatus.NOT_FOUND, f"unknown: {exc}")
@@ -227,6 +346,8 @@ def make_handler(console: Console) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:
             url = urlparse(self.path)
             parts = [p for p in url.path.split("/") if p][1:]
+            if not self._guard(url.path):
+                return None
             try:
                 body = self._body()
                 config = str(body.get("config") or console.default_config)
@@ -294,6 +415,21 @@ def make_handler(console: Console) -> type[BaseHTTPRequestHandler]:
                     return self._json(launch.as_dict(), status=HTTPStatus.ACCEPTED)
                 if len(parts) == 3 and parts[0] == "launches" and parts[2] == "stop":
                     return self._json(console.launcher.stop(parts[1]).as_dict())
+                if parts == ["logs", "retention", "preview"]:
+                    from .logs import RetentionPolicy
+
+                    merged = {**_asdict(console.logs.policy()), **(body.get("policy") or {})}
+                    candidate = RetentionPolicy.from_payload(merged)
+                    return self._json({"plan": console.logs.plan(candidate)})
+                if parts == ["logs", "retention", "apply"]:
+                    done = console.logs.apply(reason="retention policy, applied by hand")
+                    for row in done:
+                        if row.get("kind") == "run" and not row.get("skipped"):
+                            console.forget_run(str(row.get("target")))
+                    return self._json({"applied": done})
+                if len(parts) == 4 and parts[:2] == ["logs", "runs"] and parts[3] == "keep":
+                    policy = console.logs.keep(parts[2], bool(body.get("keep", True)))
+                    return self._json({"policy": _asdict(policy)})
                 return self._error(HTTPStatus.NOT_FOUND, f"no route {url.path}")
             except KeyError as exc:
                 return self._error(HTTPStatus.NOT_FOUND, f"unknown: {exc}")
@@ -301,6 +437,40 @@ def make_handler(console: Console) -> type[BaseHTTPRequestHandler]:
                 return self._error(HTTPStatus.BAD_REQUEST, _validation_text(exc))
             except (ValueError, ConfigError) as exc:
                 return self._error(HTTPStatus.BAD_REQUEST, str(exc))
+
+        def do_PUT(self) -> None:
+            url = urlparse(self.path)
+            parts = [p for p in url.path.split("/") if p][1:]
+            if not self._guard(url.path):
+                return None
+            try:
+                body = self._body()
+                if parts == ["logs", "retention"]:
+                    policy = console.logs.set_policy(dict(body.get("policy") or {}))
+                    return self._json({"policy": _asdict(policy), "plan": console.logs.plan()})
+                return self._error(HTTPStatus.NOT_FOUND, f"no route {url.path}")
+            except (TypeError, ValueError) as exc:
+                return self._error(HTTPStatus.BAD_REQUEST, str(exc))
+
+        def do_DELETE(self) -> None:
+            url = urlparse(self.path)
+            parts = [p for p in url.path.split("/") if p][1:]
+            if not self._guard(url.path):
+                return None
+            try:
+                if len(parts) == 3 and parts[:2] == ["logs", "launches"]:
+                    return self._json(console.logs.delete_launch(parts[2]))
+                if len(parts) == 4 and parts[:2] == ["logs", "runs"] and parts[3] == "projection":
+                    return self._json(console.logs.drop_projection(parts[2]))
+                if len(parts) == 2 and parts[0] == "runs":
+                    result = console.logs.delete_run(parts[1])
+                    console.forget_run(parts[1])
+                    return self._json(result)
+                return self._error(HTTPStatus.NOT_FOUND, f"no route {url.path}")
+            except KeyError as exc:
+                return self._error(HTTPStatus.NOT_FOUND, f"unknown: {exc}")
+            except ValueError as exc:
+                return self._error(HTTPStatus.CONFLICT, str(exc))
 
         # -- routes --------------------------------------------------------
         def _events(self, run_id: str, query: dict[str, str]) -> None:
@@ -388,18 +558,31 @@ def make_handler(console: Console) -> type[BaseHTTPRequestHandler]:
                 raise ValueError("request body must be a JSON object")
             return data
 
-        def _json(self, payload: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
+        def _json(
+            self,
+            payload: Any,
+            status: HTTPStatus = HTTPStatus.OK,
+            headers: dict[str, str] | None = None,
+        ) -> None:
             body = json.dumps(payload, default=str).encode()
-            return self._raw(status, body, "application/json")
+            return self._raw(status, body, "application/json", headers=headers)
 
         def _error(self, status: HTTPStatus, message: str) -> None:
             return self._json({"detail": message}, status=status)
 
-        def _raw(self, status: HTTPStatus, body: bytes, ctype: str) -> None:
+        def _raw(
+            self,
+            status: HTTPStatus,
+            body: bytes,
+            ctype: str,
+            headers: dict[str, str] | None = None,
+        ) -> None:
             self.send_response(status)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            for name, value in (headers or {}).items():
+                self.send_header(name, value)
             self.end_headers()
             try:
                 self.wfile.write(body)
@@ -435,14 +618,62 @@ def serve(
     output_root: Path,
     default_config: str,
     ui_dist: Path | None = None,
+    token: str | None = None,
+    allow_unauthenticated: bool = False,
+    env_file: str | None = ".env",
 ) -> ThreadingHTTPServer:
+    """Build the console server.
+
+    A console reachable from other machines with no key is refused, the way
+    pheasant-kb refuses a serving role bound beyond loopback without
+    ``security.api_auth``: it can start paid runs and read every trace, and a
+    bind address is not a control once it is ``0.0.0.0``.
+    ``allow_unauthenticated`` is the explicit "an ingress authenticates this".
+    """
+
+    token = (token or "").strip() or None
+    if token is None and not is_loopback(host) and not allow_unauthenticated:
+        raise Unauthenticated(
+            f"refusing to serve the console on {host!r} without an access key: set "
+            f"{TOKEN_ENV} (or pass --allow-unauthenticated when an authenticating "
+            "proxy stands in front of it)"
+        )
     console = Console(
         project_root=project_root,
         output_root=output_root,
         default_config=default_config,
         ui_dist=ui_dist if ui_dist is not None else default_ui_dist(project_root),
     )
+    console.token = token.encode("utf-8") if token else None
+    console.env_file = env_file
     server = ThreadingHTTPServer((host, port), make_handler(console))
     server.daemon_threads = True
     server.console = console  # type: ignore[attr-defined]
+    threading.Thread(
+        target=_retention_beat, args=(console,), name="console-retention", daemon=True
+    ).start()
     return server
+
+
+#: How often a policy with ``auto_apply`` is applied while the console runs.
+RETENTION_BEAT_SECONDS = 600.0
+
+
+def _retention_beat(console: Console, *, interval: float = RETENTION_BEAT_SECONDS) -> None:
+    """Apply the retention policy on a beat, when the policy asks for that.
+
+    Reads the policy each time, so turning ``auto_apply`` off in the browser
+    takes effect at the next beat without a restart. A failure is a skipped
+    beat: housekeeping must never take the console down with it.
+    """
+
+    while True:
+        time.sleep(interval)
+        try:
+            if not console.logs.policy().auto_apply:
+                continue
+            for row in console.logs.apply(reason="retention policy, automatic"):
+                if row.get("kind") == "run" and not row.get("skipped"):
+                    console.forget_run(str(row.get("target")))
+        except Exception:  # see the docstring
+            continue

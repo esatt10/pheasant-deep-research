@@ -966,7 +966,7 @@ def load_config(
             "mock_claim_seconds",
         }:
             apply_override(raw_pheasant, dotted, value)
-        elif head in {"tracing", "projection", "export"}:
+        elif head in {"logging", "tracing", "projection", "export"}:
             apply_override(raw_logging, dotted, value)
 
     models_file = ModelsFile.model_validate(raw_models)

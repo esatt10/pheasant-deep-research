@@ -21,7 +21,7 @@ const LAUNCH_TONE: Record<Launch["status"], string> = {
 
 export function RunsPage() {
   const navigate = useNavigate();
-  const runs = usePoll<RunRow[]>(api.runs, 4000);
+  const runs = usePoll<RunRow[]>(api.runsQuiet, 4000);
   const launches = usePoll<Launch[]>(api.launches, (data) =>
     data?.some((l) => l.status === "running") ? 1000 : 4000,
   );

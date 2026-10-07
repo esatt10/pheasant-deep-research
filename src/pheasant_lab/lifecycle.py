@@ -371,10 +371,11 @@ def read_json(path: Path) -> Any:
 def write_checksums(paths: RunPaths) -> dict[str, str]:
     """Digest every file a run produced, into ``integrity/checksums.sha256``.
 
-    Excludes the checksum file itself, the DuckDB projection and the
-    supervisor's own bookkeeping: the projection is derived and rebuilt, and
-    the supervisor appends after the stages it drives have checksummed, so
-    digesting either would make an honest run look tampered with.
+    Excludes the checksum file itself, the DuckDB projection, the
+    supervisor's own bookkeeping and the run's diagnostic log (``logs/``,
+    ``logging.file``): the projection is derived and rebuilt, and the
+    supervisor and the log both append after a stage has checksummed, so
+    digesting any of them would make an honest run look tampered with.
     """
 
     checksums: dict[str, str] = {}
@@ -382,7 +383,7 @@ def write_checksums(paths: RunPaths) -> dict[str, str]:
         if not file.is_file():
             continue
         relative = file.relative_to(paths.root).as_posix()
-        if relative.startswith(("integrity/", "projections/", "supervisor/")):
+        if relative.startswith(("integrity/", "projections/", "supervisor/", "logs/")):
             continue
         checksums[relative] = digest_file(file)
     paths.integrity.mkdir(parents=True, exist_ok=True)
