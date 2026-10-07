@@ -136,6 +136,9 @@ class LiveModel:
     barrier: dict[str, Any] = field(default_factory=dict)
     sync: dict[str, Any] = field(default_factory=dict)
     queue: list[dict[str, Any]] | None = None
+    #: What the region said it holds for the lab's source after the barrier
+    #: (``ingest.inventory``, pheasant >= 0.13.3); ``None`` until it says.
+    inventory: dict[str, Any] | None = None
     #: Where the region's latest sync stands *between* acceptance and
     #: indexing: ``awaiting_claim``, ``claimed`` or ``None``. Held on the
     #: model, not stamped on documents, because the events that say so and
@@ -279,6 +282,28 @@ class LiveModel:
             self._sync(payload, at)
         elif kind == "ingest.barrier":
             self._barrier(payload, at)
+        elif kind == "ingest.inventory":
+            self.inventory = {
+                key: payload.get(key)
+                for key in (
+                    "disposition",
+                    "region_documents",
+                    "region_bytes",
+                    "receipts_indexed",
+                    "receipts",
+                )
+            }
+            self._tick("pheasant", at, "inventory", payload.get("disposition"))
+            if payload.get("disposition") == "mismatch":
+                self._notice(
+                    "warn",
+                    "Region holds a different count",
+                    f"The region lists {payload.get('region_documents')} document(s) in "
+                    f"{payload.get('source_name')}; {payload.get('receipts_indexed')} receipt(s) "
+                    "say indexed. A duplicate, a stray file or a loss - reconcile says which.",
+                    at,
+                    code="inventory",
+                )
         elif kind in {"memory.seeded", "memory.indexed", "tuning.strategy"}:
             self._tick("orchestrator", at, kind.split(".")[0], kind)
 
@@ -627,6 +652,14 @@ class LiveModel:
                 "finished": self.finished,
                 "phases": phases,
                 "arms_configured": list(self.manifest.get("arms") or []),
+                # Each question is answered this many times per arm, so it is
+                # the progress bars' denominator, with questions_total.
+                "repetitions": int(
+                    ((self.manifest.get("resolved_config") or {}).get("replay") or {}).get(
+                        "repetitions"
+                    )
+                    or 1
+                ),
             },
             "agents": [
                 agent.as_dict(self._labelled_subtopics())
@@ -652,6 +685,7 @@ class LiveModel:
                 "sync": self.sync,
                 "barrier": self.barrier,
                 "queue": self.queue,
+                "inventory": self.inventory,
             },
             "notices": [n for n in self.notices if not n.get("closed")][-6:],
             "notice_history": self.notices[-20:],

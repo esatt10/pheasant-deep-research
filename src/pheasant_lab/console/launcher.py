@@ -229,6 +229,15 @@ class Launcher:
             self._tail(launch)
         return [launch.as_dict() for launch in sorted(launches, key=lambda row: -row.started_at)]
 
+    def forget(self, launch_id: str) -> None:
+        """Drop a finished launch from memory once its files are deleted."""
+
+        with self._lock:
+            launch = self._launches.get(launch_id)
+            if launch is not None and launch.status == "running":
+                raise ValueError(f"{launch_id} is still running")
+            self._launches.pop(launch_id, None)
+
     def live_runs(self) -> set[str]:
         return {
             launch.run_id

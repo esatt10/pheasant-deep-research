@@ -19,6 +19,59 @@ trace scrolls inside its own panel, while the plan, the agent list and the
 waterfall's time axis stay where they are. On a narrow or short window the
 pages fall back to scrolling as a whole.
 
+## Access key
+
+Like a pheasant-kb fleet, the console takes a shared bearer key. Put one in
+`.env` (or the environment) and restart:
+
+```bash
+PHEASANT_LAB_CONSOLE_TOKEN=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+```
+
+With a key set, every `/api` call - runs, traces, launches, logs, deletion -
+needs it, while the page shell stays public so it can ask for it. The browser
+asks once per tab, checks the key before keeping it, and holds it in that
+tab's session storage only; the top bar shows **🔓 connected** (click to
+change or disconnect). The live stream is read with `fetch` so the key travels
+as a header, never in a URL a proxy would log.
+
+Without a key the console is open, which is right for loopback and refused
+anywhere else: `--host 0.0.0.0` with no key exits with a refusal, unless
+`--allow-unauthenticated` says an authenticating proxy stands in front of it.
+`--token-env` names a different variable.
+
+The region chip uses `PHEASANT_API_TOKEN` (from `.env` too) to ask the region
+about itself, and says **Region needs a token** or **Region refused the
+token** rather than going green over a region every run would be refused by.
+
+## Logs: view, filter, delete, retain
+
+**Logs** lists what has accumulated under the output root: every launch's log
+and every run, sized by what its bytes are (trace, projection, reports,
+metrics, …).
+
+- **Read** a launch log or any text file inside a run: filter by text or by
+  level, follow a running launch, page back through the rest. `Esc` closes.
+- **Delete** a launch log, a run's projection (rebuilt by `pheasant-lab
+  replay`), or a whole run (type its id to confirm). A run's raw trace is never
+  trimmed - rule 5 - so a run is kept whole or deleted whole. Nothing a launch
+  is still writing can be deleted.
+- **Retain**: days and counts for launch logs, projections and runs, all blank
+  (keep forever) by default. The card previews exactly what the draft would
+  delete as you type; **Apply now** asks first; *apply automatically* runs it
+  every ten minutes while the console is up. Runs with reports can be
+  protected, and **☆ Keep** exempts one run from every rule. The policy is
+  console bookkeeping (`.console/retention.json`), so it never moves a config
+  digest.
+- **Audit**: every deletion, by hand or by policy, with what it freed and why
+  (`.console/retention-log.jsonl`).
+
+**Run logging** (on Configure) sets `logging.yaml` per run as ordinary
+overrides: level, text or JSON, an optional log file inside the run
+(`logs/lab.log`, which the Logs page then lists), and whether MCP request and
+response bodies are kept, up to how many bytes. These are part of the run's
+configuration, so they move its digest.
+
 ## Configure
 
 A form over the YAML. Every change is a `--set`, shown as the exact command
@@ -95,6 +148,30 @@ never selects the node it ends on.
 ![The constellation, zoomed and panned](images/live-constellation-zoom.png)
 
 ![The swimlanes, zoomed to three seconds of the run](images/live-swimlanes-zoom.png)
+
+**Select, and everything filters.** Click a research branch (on the
+constellation, its lane, the swarm tree or an event) or an arm (its bar in the
+swarm tree, its dot under the region, or its lane). The event stream narrows
+to that actor's events, the constellation and the swimlanes dim everything
+else, custody and facet coverage narrow to the branch's own sources, and the
+replay density bar marks where its events fall. **◎** zooms the constellation
+to the selection. Deselect by clicking it again, clicking empty canvas, the
+**×** on the chip in the run head or the stream, or **Esc**.
+
+**Collapse and expand.** The swarm pane and the event stream fold to a spine
+(⇤ / ⇥) and the budget/facets/custody row folds to a one-line summary; the
+browser remembers which. **⤢** expands the visual to the whole page and **Esc**
+brings the layout back.
+
+**Progress.** A bar under the run head fills with the run's phases and the
+active one's own evidence (answers recorded of answers due while evaluating;
+documents indexed of discovered while collecting), the active phase spins
+while the run is live, each arm has its own answers-due bar, and the stream
+says when it is connecting, reconnecting or waiting for the access key.
+Region notices sit in a strip under the visual's header instead of floating
+over it; good news fades on its own, warnings stay until dismissed. A thin bar
+under the top bar shows any request a person is waiting on, and pages show
+their own shape while the first answer arrives.
 
 The replay scrubber folds the same trace at any earlier sequence number.
 

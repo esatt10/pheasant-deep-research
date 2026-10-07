@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import type { Agent, Facet, RunModel, Source } from "../types";
 import { STAGE_LABEL, armColor, clock } from "../format";
 import { ZoomControls, usePanZoom } from "../components/zoom";
+import type { Focus } from "./focus";
 
 /**
  * The swarm as a place (Option B). Research branches orbit the orchestrator;
@@ -44,15 +45,21 @@ function arc(cx: number, cy: number, r: number, fraction: number): string {
 
 export function Constellation({
   model,
-  selectedAgent,
-  onSelectAgent,
+  focus,
+  onFocus,
   live,
 }: {
   model: RunModel;
-  selectedAgent: string | null;
-  onSelectAgent: (agentId: string | null) => void;
+  focus: Focus;
+  onFocus: (focus: Focus) => void;
   live: boolean;
 }) {
+  const selectedAgent = focus?.kind === "agent" ? focus.id : null;
+  const selectedArm = focus?.kind === "arm" ? focus.id : null;
+  // Selecting dims the rest rather than hiding it: where a branch sits among
+  // the others is half of what the picture says.
+  const dimAgent = (agentId: string) => !!focus && agentId !== selectedAgent;
+  const dimArm = (arm: string) => !!focus && arm !== selectedArm;
   const host = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 800, h: 420 });
   useLayoutEffect(() => {
@@ -105,6 +112,18 @@ export function Constellation({
   const armIds = model.arms.map((a) => a.arm_id);
   const pheasantTicks = model.lanes.find((l) => l.id === "pheasant")?.ticks ?? [];
   const armTraffic = (arm: string) => pheasantTicks.filter((t) => t.arm === arm).length;
+  const armPoint = (arm: string) => {
+    const index = armIds.indexOf(arm);
+    return {
+      x: region.x + 18 + index * ((regionW - 36) / Math.max(1, armIds.length - 1 || 1)),
+      y: Math.min(h - 14, region.y + regionH + 26),
+    };
+  };
+  const focusPoint = selectedAgent
+    ? positions.find((p) => p.agent.agent_id === selectedAgent) ?? null
+    : selectedArm && armIds.includes(selectedArm)
+      ? armPoint(selectedArm)
+      : null;
 
   return (
     <div
@@ -116,7 +135,7 @@ export function Constellation({
       onPointerUp={zoom.drag.onPointerUp}
       onPointerCancel={zoom.drag.onPointerCancel}
     >
-      <svg width={w} height={h} role="img" aria-label="Swarm constellation" onClick={() => onSelectAgent(null)}>
+      <svg width={w} height={h} role="img" aria-label="Swarm constellation" onClick={() => onFocus(null)}>
         <defs>
           <pattern id="cg-grid" width="28" height="28" patternUnits="userSpaceOnUse">
             <path d="M28 0H0V28" fill="none" stroke="var(--graph-grid)" />
@@ -136,7 +155,7 @@ export function Constellation({
         <path d={curve(orch, planner)} stroke="var(--graph-edge)" strokeWidth={2} fill="none" />
         <path d={curve(orch, auditor)} stroke="var(--graph-edge)" strokeWidth={1.2} strokeDasharray="4 3" fill="none" />
         {positions.map(({ agent, x, y }) => (
-          <path key={`e-${agent.agent_id}`} d={curve(planner, { x: x - radius, y })} stroke="var(--graph-edge)" strokeWidth={1.6} fill="none" />
+          <path key={`e-${agent.agent_id}`} className={dimAgent(agent.agent_id) ? "dimmed" : undefined} d={curve(planner, { x: x - radius, y })} stroke="var(--graph-edge)" strokeWidth={1.6} fill="none" />
         ))}
 
         {/* submit traffic: branch -> region landing */}
@@ -145,7 +164,7 @@ export function Constellation({
           const to = { x: region.x - 4, y: region.y + 40 + zoneH * 0.5 + (index - (positions.length - 1) / 2) * 6 };
           const active = agent.submitted > 0;
           return (
-            <g key={`s-${agent.agent_id}`}>
+            <g key={`s-${agent.agent_id}`} className={dimAgent(agent.agent_id) ? "dimmed" : undefined}>
               <path
                 d={curve(from, to)}
                 stroke="var(--r-pheasant)"
@@ -189,9 +208,11 @@ export function Constellation({
             <g
               key={agent.agent_id}
               style={{ cursor: "pointer" }}
+              className={dimAgent(agent.agent_id) ? "dimmed" : undefined}
+              data-agent={agent.agent_id}
               onClick={(event) => {
                 event.stopPropagation();
-                onSelectAgent(agent.agent_id);
+                onFocus(selected ? null : { kind: "agent", id: agent.agent_id });
               }}
             >
               <title>{`${agent.short_id} · ${agent.subtopic_label ?? ""}\n${agent.searches} searches · ${agent.acquired} acquired`}</title>
@@ -299,11 +320,20 @@ export function Constellation({
           const ay = Math.min(h - 14, region.y + regionH + 26);
           const traffic = armTraffic(arm);
           return (
-            <g key={arm}>
+            <g
+              key={arm}
+              className={dimArm(arm) ? "dimmed" : undefined}
+              style={{ cursor: "pointer" }}
+              onClick={(event) => {
+                event.stopPropagation();
+                onFocus(selectedArm === arm ? null : { kind: "arm", id: arm });
+              }}
+            >
+              {selectedArm === arm ? <circle cx={ax} cy={ay} r={14} fill="none" stroke="var(--accent)" strokeWidth={1.5} strokeDasharray="4 3" /> : null}
               <line x1={ax} y1={region.y + regionH} x2={ax} y2={ay - 9} stroke={armColor(arm)} strokeWidth={traffic ? 1.5 : 0.8} strokeDasharray={traffic ? undefined : "2 3"} />
               <circle cx={ax} cy={ay} r={9} fill={armColor(arm)} />
               <text x={ax} y={ay + 3.5} fontSize={8.5} fontWeight={700} textAnchor="middle" fill="var(--bg)">{arm}</text>
-              <title>{`${arm}: ${traffic} Pheasant call(s)`}</title>
+              <title>{`${arm}: ${traffic} Pheasant call(s) — click to filter to this arm`}</title>
             </g>
           );
         })}
@@ -315,7 +345,13 @@ export function Constellation({
         onFit={zoom.fit}
         fitted={zoom.isFit}
         hint="or scroll; drag to pan"
-      />
+      >
+        {focusPoint ? (
+          <button className="zoomctl__btn zoomctl__fit" aria-label="Zoom to the selection" title="Zoom to the selection" onClick={() => zoom.centerOn(focusPoint.x, focusPoint.y, 2)}>
+            ◎
+          </button>
+        ) : null}
+      </ZoomControls>
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { api } from "../api";
 import { usePoll } from "../hooks/usePoll";
 import type { ConfigRow, Resolved } from "../types";
@@ -64,6 +64,7 @@ function read(tree: Record<string, any> | undefined, path: string): unknown {
 
 export function ConfigurePage({ config, onConfig }: { config?: string; onConfig: (c: string) => void }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const configs = usePoll<ConfigRow[]>(api.configs, 60000);
   const selected = config ?? configs.data?.find((c) => c.default)?.path;
   const [draft] = useState(() => loadDraft(config));
@@ -124,6 +125,12 @@ export function ConfigurePage({ config, onConfig }: { config?: string; onConfig:
       else next[path] = value;
       return next;
     });
+
+  // `/configure#run-logging` (the Logs page links here): scroll once the card exists.
+  useEffect(() => {
+    if (!location.hash || !resolved) return;
+    document.getElementById(location.hash.slice(1))?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [location.hash, resolved]);
 
   const tree = resolved?.resolved;
   const profile = String(read(tree, "collection.profile") ?? "scholarly");
@@ -279,6 +286,8 @@ export function ConfigurePage({ config, onConfig }: { config?: string; onConfig:
             </div>
           </div>
 
+          <RunLogging tree={tree} overrides={overrides} change={change} source={resolved?.source_files?.logging} />
+
           <div className="card">
             <div className="card__head">
               Pheasant region <span className="sub mono">{resolved?.source_files?.pheasant?.split("/").slice(-2).join("/")}</span>
@@ -404,6 +413,108 @@ export function ConfigurePage({ config, onConfig }: { config?: string; onConfig:
           <div className="muted small">
             <b>Offline demo</b>: fixtures and the mock region, free. <b>Launch run</b>: <code>pheasant-lab run</code> — collect → freeze → evaluate → replay → report → verify, resuming any stage that crashes and stopping at the first refusal. It runs detached: closing the console does not stop it, and Runs offers <b>Resume</b> for one that was interrupted.
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * `logging.yaml`, as overrides. These describe how a run records itself, and
+ * they are part of the resolved config - so changing one moves the config
+ * digest, and the page says so like any other setting. The console's own
+ * housekeeping (retention, deletion) is on the Logs page instead: that is
+ * about the files, not about the experiment.
+ */
+function RunLogging({
+  tree,
+  overrides,
+  change,
+  source,
+}: {
+  tree: Record<string, any> | undefined;
+  overrides: Record<string, string>;
+  change: (path: string, value: string | null) => void;
+  source?: string;
+}) {
+  // The `--set` key is routed by its head (`logging.level`, `tracing.…`);
+  // the resolved tree nests the whole file under `logging`.
+  const at = (key: string) => `logging.${key}`;
+  const isSet = (key: string) => key in overrides;
+  const value = (key: string) => (isSet(key) ? overrides[key] : String(read(tree, at(key)) ?? ""));
+  const reset = (key: string, hint: string) =>
+    isSet(key) ? (
+      <button className="btn btn--ghost btn--small" style={{ padding: 0 }} onClick={() => change(key, null)}>
+        set by you · reset
+      </button>
+    ) : (
+      hint
+    );
+  const select = (key: string, label: string, options: string[], hint: string) => (
+    <div className={`fld${isSet(key) ? " fld--set" : ""}`}>
+      <label>{label}</label>
+      <select
+        className="input"
+        value={value(key)}
+        onChange={(e) => change(key, e.target.value === String(read(tree, at(key))) ? null : e.target.value)}
+      >
+        {options.map((o) => (
+          <option key={o} value={o}>
+            {o}
+          </option>
+        ))}
+      </select>
+      <div className="h">{reset(key, hint)}</div>
+    </div>
+  );
+  const toggle = (key: string, label: string, hint: string) => {
+    const on = value(key) === "true";
+    const base = String(read(tree, at(key)));
+    return (
+      <div className={`fld${isSet(key) ? " fld--set" : ""}`}>
+        <label>{label}</label>
+        <button className={`btn btn--small${on ? " btn--primary" : ""}`} onClick={() => change(key, String(!on) === base ? null : String(!on))}>
+          {on ? "on" : "off"}
+        </button>
+        <div className="h">{reset(key, hint)}</div>
+      </div>
+    );
+  };
+  return (
+    <div className="card" id="run-logging">
+      <div className="card__head">
+        Run logging <span className="sub mono">{source?.split("/").slice(-2).join("/")}</span>
+        <div className="r">
+          <Link className="btn btn--ghost btn--small" to="/logs" style={{ textDecoration: "none" }}>
+            Retention & deletion →
+          </Link>
+        </div>
+      </div>
+      <div className="card__body grid3">
+        {select("logging.level", "level", ["DEBUG", "INFO", "WARNING", "ERROR"], "every stage's process; -v still wins")}
+        {select("logging.format", "format", ["text", "json"], "json: one object per line")}
+        <div className={`fld${isSet("logging.file") ? " fld--set" : ""}`}>
+          <label>file</label>
+          <input
+            className="input mono"
+            placeholder="stderr only"
+            value={isSet("logging.file") ? overrides["logging.file"] : String(read(tree, "logging.logging.file") ?? "")}
+            onChange={(e) => change("logging.file", e.target.value || null)}
+          />
+          <div className="h">{reset("logging.file", "relative = inside the run, e.g. logs/lab.log")}</div>
+        </div>
+        {toggle("tracing.mcp_transcript.store_request_body", "MCP request bodies", "kept in raw/mcp-calls")}
+        {toggle("tracing.mcp_transcript.store_response_body", "MCP response bodies", "what the region answered")}
+        <div className={`fld${isSet("tracing.mcp_transcript.max_body_bytes") ? " fld--set" : ""}`}>
+          <label>max body bytes</label>
+          <input
+            className="input"
+            type="number"
+            min={0}
+            value={value("tracing.mcp_transcript.max_body_bytes")}
+            onChange={(e) => change("tracing.mcp_transcript.max_body_bytes", e.target.value)}
+          />
+          <div className="h">per transcript body; larger bodies are cut</div>
         </div>
       </div>
     </div>

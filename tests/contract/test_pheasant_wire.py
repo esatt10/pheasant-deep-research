@@ -4,9 +4,10 @@ Every payload read here was captured from a running pheasant
 (``tests/fixtures/pheasant/responses-<version>.json``, written by
 ``scripts/capture_pheasant_fixtures.py``). The readers are checked against each
 supported release, not only the newest: 0.12.16, 0.13.0, 0.13.1 (which
-adds search ``expand``) and 0.13.2 (which adds ``get_index_queue``, captured
-from a role-split region with no indexer running, so its syncs - the memory
-source's included - answer ``queued``). The mock region is
+adds search ``expand``), 0.13.2 (which adds ``get_index_queue``) and 0.13.4
+(whose ``describe_source`` arrived in 0.13.3). The last two were captured from
+a role-split region with no indexer running, so their syncs - the memory
+source's included - answer ``queued``. The mock region is
 kept faithful to the same shapes, but a mock is only as faithful as whoever
 last checked it - the receipts, the acknowledgement counts, the hit shape and
 the nested memory record were each read wrongly here for as long as only the
@@ -46,7 +47,7 @@ PHEASANT_PREFERENCE = re.compile(
 
 
 #: Every capture the readers must understand, oldest first.
-RELEASES = ("0.12.16", "0.13.0", "0.13.1", "0.13.2")
+RELEASES = ("0.12.16", "0.13.0", "0.13.1", "0.13.2", "0.13.4")
 
 
 def captured(version: str) -> dict:
@@ -304,8 +305,9 @@ def test_the_mock_holds_a_queued_memory_record_back_until_it_is_indexed(config):
     assert server._memory_hits("dsup nucleosomes", as_of=None, include_rules=False)
 
 
-def test_the_mock_queues_in_pheasants_0_13_2_shape():
-    wire = captured("0.13.2")
+@pytest.mark.parametrize("version", ["0.13.2", "0.13.4"])
+def test_the_mock_queues_in_pheasants_fleet_shape(version):
+    wire = captured(version)
     server = MockPheasantServer(claim_seconds=60)
     server.sources["fixture-wire"] = "/state/uploads/x"
     sync = server._tool_sync_source({"source_name": "fixture-wire"})
@@ -525,3 +527,69 @@ def test_a_graph_relationship_hit_is_hydrated_from_the_labs_own_submission(confi
     retriever.hydrate(passages)
     assert passages[0]["text_source"] == "document"
     assert "the whole abstract" in passages[0]["text"]
+
+
+# -- the region's own inventory (0.13.3+) -----------------------------------
+
+
+def _inventory_ingestor(config, payload, *, indexed: int, total: int) -> Ingestor:
+    from pheasant_lab.pheasant.receipts import IngestReceipt
+
+    capabilities = SimpleNamespace(has=lambda name: True, tool=lambda name: "describe_source")
+    client = SimpleNamespace(
+        call=lambda tool, *a, **k: SimpleNamespace(
+            result=SimpleNamespace(payload=lambda: payload, is_error=False)
+        )
+    )
+    ingestor = Ingestor(client, capabilities, config.pheasant, run_id="run-1")
+    for index in range(total):
+        ingestor.ledger.record(
+            IngestReceipt(
+                receipt_id=f"r-{index}",
+                run_id="run-1",
+                source_id=f"source-{index}",
+                idempotency_key=f"key-{index}",
+                submission_id=None,
+                status="indexed" if index < indexed else "accepted",
+            )
+        )
+    return ingestor
+
+
+def test_the_regions_inventory_is_read_beside_the_receipts(config):
+    """0.13.4's ``describe_source``: a count read off the region's own index."""
+
+    payload = captured("0.13.4")["describe_source"]
+    held = payload["totals"]["documents"]
+    ingestor = _inventory_ingestor(config, payload, indexed=held, total=held)
+    summary = ingestor.inventory()
+    assert summary["disposition"] == "consistent"
+    assert summary["region_documents"] == held == summary["receipts_indexed"]
+    assert summary["region_bytes"] == payload["totals"]["size_bytes"]
+
+
+def test_a_region_holding_more_than_the_receipts_say_is_a_mismatch(config):
+    payload = captured("0.13.4")["describe_source"]
+    held = payload["totals"]["documents"]
+    ingestor = _inventory_ingestor(config, payload, indexed=held - 2, total=held)
+    assert ingestor.inventory()["disposition"] == "mismatch"
+
+
+def test_an_inventory_the_region_cannot_give_is_unknown_not_a_finding(config):
+    capabilities = SimpleNamespace(has=lambda name: False, tool=lambda name: "")
+    ingestor = Ingestor(SimpleNamespace(), capabilities, config.pheasant, run_id="run-1")
+    assert ingestor.inventory() is None
+
+
+def test_the_mock_describes_a_source_in_pheasants_shape(config):
+    real = captured("0.13.4")["describe_source"]
+    server = MockPheasantServer()
+    ingestor = ingestor_for(config, server)
+    ingestor.submit([request_for("body about dsup")])
+    ingestor.sync()
+    ingestor.acknowledge()
+    mock = server._tool_describe_source({"source_name": config.pheasant.source_name})
+    assert mock.keys() == real.keys()
+    assert mock["totals"].keys() == real["totals"].keys()
+    assert mock["source"].keys() == real["source"].keys()
+    assert ingestor.inventory()["disposition"] == "consistent"

@@ -49,3 +49,16 @@ export function stagePill(stage: string): string {
   if (stage === "rejected") return "pill pill--danger";
   return "pill";
 }
+
+export function bytes(value: number | null | undefined): string {
+  if (value == null) return "—";
+  if (value < 1024) return `${value} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let n = value / 1024;
+  let unit = 0;
+  while (n >= 1024 && unit < units.length - 1) {
+    n /= 1024;
+    unit += 1;
+  }
+  return `${n >= 100 ? n.toFixed(0) : n.toFixed(1)} ${units[unit]}`;
+}

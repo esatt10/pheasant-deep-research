@@ -111,6 +111,19 @@ export function usePanZoom(host: RefObject<HTMLElement | null>, { min = 0.3, max
     [host, min, max],
   );
   const fit = useCallback(() => setView(IDENTITY), []);
+  /** Put the content point (px, py) at the centre of the host, at scale k. */
+  const centerOn = useCallback(
+    (px: number, py: number, k = 2) =>
+      setView(() => {
+        const node = host.current;
+        const scale = clamp(k);
+        const w = node ? node.clientWidth : 0;
+        const h = node ? node.clientHeight : 0;
+        return { k: scale, x: w / 2 - px * scale, y: h / 2 - py * scale };
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [host, min, max],
+  );
   const drag = useDrag((dx, dy) => setView((v) => ({ ...v, x: v.x + dx, y: v.y + dy })), host);
   useWheel(host, (event) => {
     event.preventDefault();
@@ -122,6 +135,7 @@ export function usePanZoom(host: RefObject<HTMLElement | null>, { min = 0.3, max
     transform: `translate(${view.x} ${view.y}) scale(${view.k})`,
     zoomAt,
     fit,
+    centerOn,
     isFit: view.k === 1 && view.x === 0 && view.y === 0,
     drag,
   };
@@ -169,6 +183,7 @@ export function ZoomControls({
   fitted,
   hint,
   inline,
+  children,
 }: {
   onIn: () => void;
   onOut: () => void;
@@ -176,9 +191,11 @@ export function ZoomControls({
   fitted?: boolean;
   hint?: string;
   inline?: boolean;
+  children?: React.ReactNode;
 }) {
   return (
     <div className={`zoomctl${inline ? " zoomctl--inline" : ""}`} data-nodrag onPointerDown={(e) => e.stopPropagation()}>
+      {children}
       <button className="zoomctl__btn" aria-label="Zoom in" title={`Zoom in${hint ? ` (${hint})` : ""}`} onClick={onIn}>
         +
       </button>

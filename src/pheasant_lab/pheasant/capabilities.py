@@ -102,6 +102,8 @@ EXPECTED_ARGUMENTS: dict[str, tuple[str, ...]] = {
     "snapshot_get": ("knowledge_base", "snapshot_id"),
     "describe_retrieval": ("knowledge_base",),
     "record_evidence": ("knowledge_base", "query", "target_id", "event_type"),
+    "index_queue": ("knowledge_base",),
+    "source_inventory": ("knowledge_base", "source_name"),
 }
 
 

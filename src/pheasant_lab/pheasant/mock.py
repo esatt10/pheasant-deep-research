@@ -14,7 +14,8 @@ region, which is why ``doctor`` refuses to treat ``mock`` as a live target.
 
 **Its wire shapes follow pheasant's, not this lab's wishes.** Every response
 here was checked against a running pheasant (0.12.16, 0.13.0, 0.13.1, which
-added ``expand``, and 0.13.2, which added ``get_index_queue``): receipts split into
+added ``expand``, 0.13.2, which added ``get_index_queue``, and 0.13.4, whose
+``describe_source`` arrived in 0.13.3): receipts split into
 ``accepted``/``rejected`` lists with a ``disposition``, acknowledgement as
 counts, a submission landing in a directory that must be registered as a
 source before ``sync_source`` will index it, hits carrying a capped preview
@@ -429,6 +430,17 @@ class MockPheasantServer:
                 ["knowledge_base"],
             ),
             tool(
+                "describe_source",
+                "One source in detail: what it holds and what it links to.",
+                {
+                    **kb,
+                    "source_name": {"type": "string"},
+                    "principal": {"type": "string"},
+                    "principal_groups": {"type": "array", "items": {"type": "string"}},
+                },
+                ["knowledge_base", "source_name"],
+            ),
+            tool(
                 "record_evidence",
                 "Record what came of a result this region returned.",
                 {
@@ -810,6 +822,50 @@ class MockPheasantServer:
             "depth": None,
             "tasks": tasks,
             "counts": counts,
+        }
+
+    def _tool_describe_source(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
+        """pheasant's `describe_source` shape (0.13.3, `services/inventory_detail.py`).
+
+        Counts what is *indexed*, like the region: a document still waiting
+        for an indexer is not yet something the source holds.
+        """
+
+        name = str(arguments.get("source_name") or "")
+        if name not in self.sources:
+            raise _Refusal(f"Unknown source: {name}")
+        with self._lock:
+            held = [d for d in self.documents.values() if d.source_name == name and d.indexed]
+        size = sum(len(d.text.encode("utf-8")) for d in held)
+        directories: dict[str, int] = {}
+        extensions: dict[str, int] = {}
+        for document in held:
+            head, _, _ = document.relative_path.rpartition("/")
+            directories[f"{head}/" if head else ""] = (
+                directories.get(f"{head}/" if head else "", 0) + 1
+            )
+            suffix = os.path.splitext(document.relative_path)[1] or ""
+            extensions[suffix] = extensions.get(suffix, 0) + 1
+        return {
+            "knowledge_base": self.knowledge_base,
+            "source": {
+                "name": name,
+                "type": "document_folder",
+                "enabled": True,
+                "status": "healthy",
+                "location": self.sources[name],
+                "description": None,
+                "last_indexed_at": None,
+            },
+            "totals": {"documents": len(held), "size_bytes": size},
+            "by_extension": [
+                {"extension": k, "documents": v} for k, v in sorted(extensions.items())
+            ],
+            "by_directory": [
+                {"directory": k, "documents": v} for k, v in sorted(directories.items())
+            ],
+            "recent": [],
+            "links": {"outgoing": [], "incoming": []},
         }
 
     def _tool_search_context(self, arguments: Mapping[str, Any]) -> dict[str, Any]:

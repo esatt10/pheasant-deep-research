@@ -5,8 +5,8 @@ import type { RegionProbe } from "../types";
 import { clock } from "../format";
 
 /**
- * What the configured region says about itself *now*: `/ready` and `/queue`,
- * asked directly. Amber whenever anything is pre-claim, busy, draining or
+ * What the configured region says about itself *now*: `/ready`, `/queue` and
+ * what it holds for the lab's source, asked directly. Amber whenever anything is pre-claim, busy, draining or
  * behind; green only when it is ready **and** nothing is waiting.
  */
 export function RegionChip({ config }: { config: string | undefined }) {
@@ -83,6 +83,18 @@ export function RegionChip({ config }: { config: string | undefined }) {
                 </dd>
               </>
             ) : null}
+            <dt>lab source</dt>
+            <dd>
+              {data.inventory ? (
+                <>
+                  <span className="mono">{data.inventory.source_name}</span> · {data.inventory.documents ?? "—"} document
+                  {data.inventory.documents === 1 ? "" : "s"} indexed
+                  {data.inventory.last_indexed_at ? <span className="muted"> · last {data.inventory.last_indexed_at}</span> : null}
+                </>
+              ) : (
+                <span className="muted">not registered yet, or not reported by this pheasant version</span>
+              )}
+            </dd>
             <dt>index queue</dt>
             <dd>
               {data.queue_unsupported

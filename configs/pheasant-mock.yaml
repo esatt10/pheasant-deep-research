@@ -34,6 +34,7 @@ capabilities:
   describe_retrieval: { tool: describe_retrieval, required: false }
   record_evidence: { tool: record_evidence, required: false }
   index_queue: { tool: get_index_queue, required: false }
+  source_inventory: { tool: describe_source, required: false }
 
 discovery:
   verify_configured_tool_exists: true

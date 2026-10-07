@@ -21,7 +21,7 @@ const LAUNCH_TONE: Record<Launch["status"], string> = {
 
 export function RunsPage() {
   const navigate = useNavigate();
-  const runs = usePoll<RunRow[]>(api.runs, 4000);
+  const runs = usePoll<RunRow[]>(api.runsQuiet, 4000);
   const launches = usePoll<Launch[]>(api.launches, (data) =>
     data?.some((l) => l.status === "running") ? 1000 : 4000,
   );
@@ -168,6 +168,7 @@ export function RunsPage() {
             ))}
           </tbody>
         </table>
+        {runs.loading ? Array.from({ length: 5 }, (_, i) => <div key={i} className="skel skel-row" style={{ width: `${92 - i * 8}%` }} />) : null}
         {runs.data && runs.data.length === 0 ? (
           <div className="empty">No runs yet. Configure one and launch it — the offline demo costs nothing.</div>
         ) : null}

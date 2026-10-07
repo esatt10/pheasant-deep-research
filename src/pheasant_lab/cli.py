@@ -35,6 +35,7 @@ from .lifecycle import (
     write_checksums,
     write_json,
 )
+from .logsetup import configure_logging
 from .models import build as build_model
 from .pheasant.capabilities import CapabilityMap, MissingCapability, enforce, resolve
 from .pheasant.client import PheasantClient
@@ -121,6 +122,9 @@ def open_session(
     paths = run_paths(config.experiment.output_root, run_id)
     if create:
         paths.ensure()
+        configure_logging(
+            config.logging.logging, paths.root, verbose=bool(getattr(args, "verbose", False))
+        )
 
     manifest = build_manifest(
         config=config,
@@ -178,6 +182,9 @@ def resume_session(
     paths = run_paths(config.experiment.output_root, args.run)
     if not paths.manifest.is_file():
         raise ConfigError(f"no run at {paths.root}")
+    configure_logging(
+        config.logging.logging, paths.root, verbose=bool(getattr(args, "verbose", False))
+    )
     manifest = read_json(paths.manifest)
     redactor = _redactor(config)
     current_digest = config.digest(redactor)
@@ -635,6 +642,9 @@ def cmd_collect(args: argparse.Namespace) -> int:
             session.ingestor.acknowledge()
             reconcile = session.ingestor.reconcile()
             session.state.set("reconcile", reconcile)
+            inventory = session.ingestor.inventory()
+            if inventory is not None:
+                session.state.set("inventory", inventory)
 
         session.state.update(
             topic_id=topic.id,
@@ -1389,25 +1399,38 @@ def cmd_serve(args: argparse.Namespace) -> int:
     so binding it anywhere else is a decision to say out loud.
     """
 
-    from .console.server import serve
+    from .console.server import Unauthenticated, serve
+    from .settings import load_dotenv
 
     project_root = Path(getattr(args, "project_root", None) or Path.cwd()).resolve()
-    config = load_config(
-        args.config, project_root=project_root, env_file=getattr(args, "env_file", ".env")
-    )
+    env_file = getattr(args, "env_file", ".env")
+    config = load_config(args.config, project_root=project_root, env_file=env_file)
     output_root = Path(args.output_root_dir or config.experiment.output_root)
     if not output_root.is_absolute():
         output_root = project_root / output_root
-    server = serve(
-        host=args.host,
-        port=args.port,
-        project_root=project_root,
-        output_root=output_root,
-        default_config=str(Path(args.config)),
-        ui_dist=Path(args.ui_dist) if args.ui_dist else None,
-    )
+    # The key, like every secret here, comes from the environment or `.env`,
+    # never from a flag: argv is visible to every process on the machine.
+    token_env = getattr(args, "token_env", None) or "PHEASANT_LAB_CONSOLE_TOKEN"
+    environment = {**(load_dotenv(project_root / env_file) if env_file else {}), **os.environ}
+    try:
+        server = serve(
+            host=args.host,
+            port=args.port,
+            project_root=project_root,
+            output_root=output_root,
+            default_config=str(Path(args.config)),
+            ui_dist=Path(args.ui_dist) if args.ui_dist else None,
+            token=environment.get(token_env),
+            allow_unauthenticated=bool(getattr(args, "allow_unauthenticated", False)),
+            env_file=env_file,
+        )
+    except Unauthenticated as exc:
+        print(f"refused: {exc}")
+        return EXIT_REFUSED
     console = server.console  # type: ignore[attr-defined]
     print(f"pheasant-lab console on http://{args.host}:{server.server_address[1]}")
+    if console.token is not None:
+        print(f"access key required ({token_env}); the browser asks for it once per tab")
     print(f"runs: {output_root}")
     if console.ui_dist is None:
         print("UI not built: run `make ui`. The API is live at /api.")
@@ -1556,6 +1579,17 @@ def build_parser() -> argparse.ArgumentParser:
     serve_cmd.add_argument("--port", type=int, default=8770)
     serve_cmd.add_argument("--runs", dest="output_root_dir", default=None)
     serve_cmd.add_argument("--ui-dist", default=None, help="a built UI (default: ui/dist)")
+    serve_cmd.add_argument(
+        "--token-env",
+        default="PHEASANT_LAB_CONSOLE_TOKEN",
+        help="environment variable (or .env key) holding the console's access key; "
+        "when it is set, every /api call needs it as a bearer token",
+    )
+    serve_cmd.add_argument(
+        "--allow-unauthenticated",
+        action="store_true",
+        help="serve beyond loopback with no access key (only behind an authenticating proxy)",
+    )
     serve_cmd.set_defaults(func=cmd_serve)
 
     return parser

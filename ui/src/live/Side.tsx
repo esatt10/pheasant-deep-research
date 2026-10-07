@@ -1,17 +1,24 @@
 import type { LabEvent, RunModel } from "../types";
 import { ROLE_COLOR, STAGE_LABEL, armColor, stagePill, usd } from "../format";
 import { summarize } from "./summary";
+import { answersDue, type Focus } from "./focus";
 
 /** The swarm as a tree (Option A), until an agent is picked. */
 export function SwarmTree({
   model,
-  selected,
-  onSelect,
+  focus,
+  onFocus,
+  onCollapse,
 }: {
   model: RunModel;
-  selected: string | null;
-  onSelect: (agentId: string | null) => void;
+  focus: Focus;
+  onFocus: (focus: Focus) => void;
+  onCollapse: () => void;
 }) {
+  const selected = focus?.kind === "agent" ? focus.id : null;
+  const selectedArm = focus?.kind === "arm" ? focus.id : null;
+  const onSelect = (agentId: string | null) =>
+    onFocus(agentId && agentId !== selected ? { kind: "agent", id: agentId } : null);
   const researchers = model.agents.filter((a) => a.role === "researcher");
   const searching = researchers.filter((a) => a.status === "searching").length;
   const pre = model.custody.awaiting_claim ?? 0;
@@ -19,6 +26,11 @@ export function SwarmTree({
     <div className="card side">
       <div className="card__head">
         Swarm <span className="sub">{researchers.length} branches · {searching} searching</span>
+        <div className="r">
+          <button className="btn btn--ghost btn--small" onClick={onCollapse} aria-label="Collapse the swarm" title="Collapse">
+            ⇤
+          </button>
+        </div>
       </div>
       <div className="side__scroll" style={{ padding: 6 }}>
         <button className="tnode" onClick={() => onSelect(null)}>
@@ -75,14 +87,27 @@ export function SwarmTree({
         <div className="eyebrow" style={{ marginBottom: 6 }}>
           Arms {model.questions_total ? `· ${model.questions_total} questions` : "(after freeze)"}
         </div>
-        <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+        <div className="armbars">
           {model.run.arms_configured.map((arm) => {
             const row = model.arms.find((a) => a.arm_id === arm);
+            // `answered` counts every answer event, abstentions included.
+            const done = row ? row.answered : 0;
+            const total = answersDue(model);
+            const on = selectedArm === arm;
             return (
-              <span key={arm} className="pill" style={{ color: armColor(arm) }} title={row?.label}>
-                {arm}
-                {row ? <span className="muted">&nbsp;{row.answered}{model.questions_total ? `/${model.questions_total}` : ""}</span> : null}
-              </span>
+              <button
+                key={arm}
+                className={`armbar${on ? " armbar--sel" : ""}`}
+                title={`${row?.label ?? arm}${row ? ` · ${row.answered} answers, ${row.abstained} of them abstentions` : " · not started"} — click to filter to this arm`}
+                onClick={() => onFocus(on ? null : { kind: "arm", id: arm })}
+                aria-pressed={on}
+              >
+                <span className="armbar__id" style={{ color: armColor(arm) }}>{arm}</span>
+                <span className="bar" style={{ flex: 1 }}>
+                  <i style={{ width: total ? `${Math.min(100, (done / total) * 100)}%` : "0%", background: armColor(arm) }} />
+                </span>
+                <span className="muted mono armbar__n">{total ? `${done}/${total}` : row ? done : "—"}</span>
+              </button>
             );
           })}
         </div>
@@ -116,7 +141,7 @@ export function Inspector({
         {agent.short_id}
         <div className="r">
           <span className={agent.status === "searching" ? "pill pill--info" : "pill"}>{agent.status}</span>
-          <button className="btn btn--ghost btn--small" onClick={onClose} aria-label="Back to the swarm">
+          <button className="btn btn--ghost btn--small" onClick={onClose} aria-label="Back to the swarm" title="Back to the swarm (Esc)">
             ×
           </button>
         </div>

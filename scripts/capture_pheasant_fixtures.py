@@ -174,6 +174,13 @@ def main(argv: list[str] | None = None) -> int:
             "source_name": provenance.get("source_id"),
         },
     )
+    if "describe_source" in session.tools:
+        # pheasant >= 0.13.3: what the region holds for the lab's own source,
+        # read off its index (the lab corpus indexed before the capture).
+        responses["describe_source"] = call(
+            "describe_source",
+            {"knowledge_base": KNOWLEDGE_BASE, "source_name": "swarm-lab-literature"},
+        )
     responses["memory_write"] = call(
         "memory_write",
         {

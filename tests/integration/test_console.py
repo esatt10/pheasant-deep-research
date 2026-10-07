@@ -245,6 +245,70 @@ def test_a_pre_claim_task_is_a_warning_and_a_claimed_one_is_not() -> None:
     ]
 
 
+def _probe_against(monkeypatch, handler, *, token: str | None):
+    """``probe_region`` with its HTTP client answered by ``handler``, offline."""
+
+    import httpx
+
+    from pheasant_lab.console import region
+
+    real = httpx.Client
+
+    def client(**kwargs):
+        return real(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(region.httpx, "Client", client)
+    if token is None:
+        monkeypatch.delenv("PHEASANT_API_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("PHEASANT_API_TOKEN", token)
+    return region.probe_region(
+        {
+            "transport": "streamable_http",
+            "url": "http://region.test:8765/mcp",
+            "knowledge_base": "pheasant-lab",
+            "source_name": "swarm-lab-literature",
+        }
+    )
+
+
+def _authenticated_region(request):
+    import httpx
+
+    wire = json.loads((REPO_ROOT / "tests/fixtures/pheasant/responses-0.13.4.json").read_text())
+    if request.url.path == "/ready":
+        return httpx.Response(200, json={"status": "ready", "role": "api"})
+    if request.headers.get("authorization") != "Bearer right":
+        return httpx.Response(401, json={"detail": "this region requires a bearer token"})
+    if request.url.path == "/queue":
+        return httpx.Response(200, json=wire["get_index_queue"])
+    if request.url.path == "/sources/swarm-lab-literature/overview":
+        return httpx.Response(200, json=wire["describe_source"])
+    return httpx.Response(404, json={"detail": "Not Found"})
+
+
+def test_the_probe_reports_what_the_region_holds_for_the_labs_source(monkeypatch) -> None:
+    probe = _probe_against(monkeypatch, _authenticated_region, token="right")
+    assert probe["inventory"]["documents"] == 19
+    assert probe["inventory"]["source_name"] == "swarm-lab-literature"
+    assert not any(n["code"] == "auth" for n in probe["notices"])
+
+
+@pytest.mark.parametrize(
+    ("token", "title"), [(None, "Region needs a token"), ("wrong", "Region refused the token")]
+)
+def test_a_region_that_refuses_the_probe_says_so_rather_than_going_green(
+    monkeypatch, token, title
+) -> None:
+    """``/ready`` is public on a token-protected region; a silent 401 read as healthy."""
+
+    probe = _probe_against(monkeypatch, _authenticated_region, token=token)
+    assert probe["notices"][0]["code"] == "auth"
+    assert probe["notices"][0]["title"] == title
+    assert probe["notices"][0]["tone"] == "danger"
+    assert probe["inventory"] is None
+
+
 # ---------------------------------------------------------------------------
 # configuration
 # ---------------------------------------------------------------------------
@@ -329,6 +393,16 @@ def test_the_api_lists_and_folds_runs(console: str, fleet_run: Path) -> None:
 
     status, view = _get(f"{console}/api/runs/{fleet_run.name}")
     assert status == 200 and view["run"]["run_id"] == fleet_run.name
+    # The progress bars' denominator: every question, once per repetition.
+    assert view["run"]["repetitions"] == 1
+    # `answered` counts every answer, abstentions included: never more
+    # answers than are due, which is what the arm bars draw.
+    for arm in view["arms"]:
+        assert arm["abstained"] <= arm["answered"] <= view["questions_total"]
+    # The mock describes the lab's source after the barrier, like 0.13.4.
+    inventory = view["region"]["inventory"]
+    assert inventory["disposition"] == "consistent"
+    assert inventory["region_documents"] == inventory["receipts_indexed"] > 0
 
     status, page = _get(f"{console}/api/runs/{fleet_run.name}/events?after=0&limit=5")
     assert [row["sequence"] for row in page["events"]] == [1, 2, 3, 4, 5]

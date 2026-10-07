@@ -425,6 +425,8 @@ class Ingestor:
             "completed": "succeeded",
             "timed_out": "failed",
             "refused": "failed",
+            "consistent": "succeeded",
+            "mismatch": "partial",
         }.get(disposition, "partial")
         self.tracer.emit(
             event_type,
@@ -489,6 +491,56 @@ class Ingestor:
             self.capabilities.tool("ingest_reconcile"), arguments, idempotent=True, stage="index"
         )
         return _as_mapping(outcome.result.payload() if outcome.result else {})
+
+    def inventory(self) -> dict[str, Any] | None:
+        """What the region says it holds for this lab's source, beside the receipts.
+
+        pheasant >= 0.13.3 describes a source from its own index
+        (``describe_source``): a document count read off the artifacts, not
+        off the receipts. Reconcile asks "is every receipt's artifact there";
+        this asks the converse - "is everything there something a receipt
+        accounts for" - which is how a duplicate or a stray file in the
+        landing directory shows up. Observational: ``None`` when the region
+        has no such tool or the call fails, an unknown and never a finding.
+        """
+
+        if not self.capabilities.has("source_inventory"):
+            return None
+        try:
+            outcome = self.client.call(
+                self.capabilities.tool("source_inventory"),
+                {
+                    self._kb_field: self.config.knowledge_base,
+                    "source_name": self.config.source_name,
+                },
+                idempotent=True,
+                stage="index",
+            )
+        except Exception:
+            return None
+        if outcome.result is None or outcome.result.is_error:
+            return None
+        payload = _as_mapping(outcome.result.payload())
+        totals = payload.get("totals") if isinstance(payload.get("totals"), Mapping) else {}
+        held = totals.get("documents")
+        indexed, receipts = self.ledger.index_rate()
+        if not isinstance(held, int):
+            return None
+        disposition = "consistent" if held == indexed else "mismatch"
+        summary = {
+            "region_documents": held,
+            "region_bytes": totals.get("size_bytes"),
+            "receipts_indexed": indexed,
+            "receipts": receipts,
+            "last_indexed_at": (payload.get("source") or {}).get("last_indexed_at"),
+            "disposition": disposition,
+        }
+        self._emit(
+            "ingest.inventory",
+            disposition,
+            **{k: v for k, v in summary.items() if k != "disposition"},
+        )
+        return summary
 
     def ingest_status(
         self, *, idempotency_key: str | None = None, submission_id: str | None = None
