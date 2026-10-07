@@ -67,3 +67,43 @@ jobs:
           name: demo-run
           path: runs/
           retention-days: 7
+
+  # The Docker deployment: the image builds, the console in it starts and
+  # refuses to serve beyond loopback without a key, and both Compose files
+  # resolve. The bundled region's own image is pheasant-kb's to build; the
+  # wiring between the two is held by tests/unit/test_docker_deployment.py.
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compose files resolve
+        env:
+          PHEASANT_API_TOKEN: ci-region-token
+          PHEASANT_LAB_CONSOLE_TOKEN: ci-console-token
+        run: |
+          docker compose -f docker-compose.yml config --quiet
+          docker compose -f docker-compose.fleet.yml config --quiet
+
+      - name: Build the lab image
+        run: docker build -t pheasant-swarm-lab:ci .
+
+      - name: The console starts with a key and refuses without one
+        run: |
+          if docker run --rm pheasant-swarm-lab:ci; then
+            echo "the console served 0.0.0.0 with no key" && exit 1
+          fi
+          docker run -d --name lab -p 127.0.0.1:8770:8770 \
+            -e PHEASANT_LAB_CONSOLE_TOKEN=ci-console-token pheasant-swarm-lab:ci
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8770/api/auth && break
+            sleep 1
+          done
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8770/api/runs)" = 401
+          curl -fsS -H 'Authorization: Bearer ci-console-token' \
+            -H 'content-type: application/json' -X POST http://127.0.0.1:8770/mcp \
+            -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"lab_describe_settings","arguments":{"key":"experiment.cost_budget_usd"}}}' \
+            | grep -q 'hard dollar ceiling'
+          docker logs lab
+          docker rm -f lab

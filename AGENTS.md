@@ -60,6 +60,9 @@ uv run pheasant-lab draft-topic --config configs/demo.yaml --intent "…"  # dra
 make check                                            # lint + schemas + tests
 uv run python scripts/export_schemas.py               # after changing a record shape
 make ui && uv run pheasant-lab serve                  # the console, http://127.0.0.1:8770
+uv run pheasant-lab mcp                               # the console's tools over MCP stdio (/mcp over HTTP)
+uv run pheasant-lab settings --section models         # every setting, explained
+docker compose up -d --build                          # lab + a pheasant 0.13.5 region (docs/docker.md)
 ```
 
 ## 4. Design decisions worth knowing before you change something
@@ -214,6 +217,35 @@ make ui && uv run pheasant-lab serve                  # the console, http://127.
   deletion. Retention defaults to keeping everything; the policy is console
   bookkeeping under `.console/`, not experiment configuration, so it never
   moves a digest. Run logging (`logging.yaml`) is configuration and does.
+
+- **One operation, two surfaces.** `console/operations.py` is the only
+  implementation of what the console does; the HTTP routes and the MCP tools
+  (`console/mcp.py`, stdlib JSON-RPC at `/mcp` and on stdio) parse, call it and
+  marshal. A behaviour that differs between them must be a visible difference
+  in an adapter, the shape pheasant-kb's `services/` keeps.
+- **One settings draft per console.** `console/state.Workspace`
+  (`.console/workspace.json`) holds the config file, its overrides, topic,
+  connection and launch caps; the UI and MCP both edit it, and a launch turns
+  it into an argv. An invalid draft is kept and reported (`valid: false`)
+  unless `strict`, because linked fields - five budget shares summing to one
+  - can only be edited one at a time.
+- **Every setting is explained, and the explanation cannot drift.**
+  `catalog.py` derives keys, types and defaults from the file models and adds
+  only meaning, values, ranges and role recommendations;
+  `tests/unit/test_catalog.py` fails on a field with no explanation or an
+  explanation with no field.
+- **`--set` routing is derived, and an unrouted head is refused.** The owner
+  of each head comes from the file models (`settings.OVERRIDE_FILES`).
+- **A connection is overrides, a token is environment.** Selecting a
+  connection writes `transport/url/knowledge_base/source_name/token_env` into
+  the draft; a stored token (`.console/secrets.json`, 0600, never returned) is
+  handed to launched children under its variable, where the redactor already
+  registers every `*_TOKEN`.
+- **A run records where it was made.** `environment.deployment` (from
+  `PHEASANT_LAB_DEPLOYMENT`, `docker` in the image); a console with a run
+  scope lists, reads and deletes only those runs. Not digested.
+- **What a person calls a run is not the run.** Labels and notes live in
+  `.console/run-labels.json`; the run directory stays append-only evidence.
 
 ## 5. Traps this repository has already fallen into
 
@@ -375,3 +407,23 @@ make ui && uv run pheasant-lab serve                  # the console, http://127.
   to it and read "28/14" for the prior-only arm, which abstains on every
   question. A count's definition belongs next to the count; it is commented
   at both places that read it now.
+- **A form that renders `override ?? resolved` cannot be typed into.**
+  Clearing a field deleted its override and the resolved value snapped back
+  mid-keystroke: "12" over "6" became "612", and an experiment name could not
+  be retyped at all. Inputs own their text while focused and commit after a
+  pause (`ui/src/configure/fields.tsx`). Found by typing, in a real browser.
+- **An override head no file claimed was silently dropped.** `budget.*`,
+  `pricing.*`, `token_env` and `source_name` resolved to the file's value
+  whatever `--set` said - a budget control that did not control the budget.
+  Routing is derived from the models now, and an unknown head is refused.
+- **A console started with `--runs` elsewhere never saw what it launched.**
+  Children wrote to the config's own `experiment.output_root`. The launcher
+  passes its output root (not digested) when they differ.
+- **A region reached by service name answers MCP 421.** pheasant builds its
+  DNS-rebinding allow-list from `server.api.cors_origins`, so the lab's
+  container dialling `http://pheasant:8765/mcp` was refused on every call
+  while every in-process test (loopback) passed. The vendored region config
+  lists the origin, `tests/unit/test_docker_deployment.py` holds it, and
+  pheasant-kb's lab-fleet answers list `http://api:8765`. Found by running
+  the Compose stack.
+

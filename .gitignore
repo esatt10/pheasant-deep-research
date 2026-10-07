@@ -236,6 +236,7 @@ configs/pricing.yaml
 .env
 .env.*
 !.env.example
+!.env.docker.example
 
 # uv
 .venv/

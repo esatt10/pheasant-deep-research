@@ -1,0 +1,53 @@
+# pheasant-swarm-lab against pheasant-kb's role-split lab fleet.
+#
+# Start the fleet first, from a pheasant-kb checkout (0.13.5):
+#
+#   docker compose --env-file .env -f deploy/compose/docker-compose.pheasant-lab.yml up -d
+#
+# That Compose project is named `pheasant-lab`, so its network is
+# `pheasant-lab_default` and its API/MCP tier answers as `api:8765`. Then,
+# from this repository, with the SAME PHEASANT_API_TOKEN as the fleet's .env:
+#
+#   docker compose -f docker-compose.fleet.yml up -d --build
+#
+# The lab joins the fleet's network and talks to http://api:8765/mcp - the
+# `lab-fleet` connection in the console. On the fleet a sync is *published*
+# (status: queued) and claimed by its indexer; the lab waits on
+# get_index_queue and the console's Live view shows the pre-claim interval.
+# The fleet already allow-lists /state for the lab's landing directory.
+name: pheasant-swarm-lab-fleet
+
+services:
+  lab:
+    image: ${PHEASANT_LAB_IMAGE:-pheasant-swarm-lab:local}
+    build:
+      context: .
+    restart: unless-stopped
+    init: true
+    environment:
+      PHEASANT_API_TOKEN: ${PHEASANT_API_TOKEN:?set the fleet's PHEASANT_API_TOKEN in .env}
+      PHEASANT_LAB_CONSOLE_TOKEN: ${PHEASANT_LAB_CONSOLE_TOKEN:?set PHEASANT_LAB_CONSOLE_TOKEN in .env}
+      PHEASANT_MCP_URL: ${PHEASANT_MCP_URL:-http://api:8765/mcp}
+      PHEASANT_KNOWLEDGE_BASE: ${PHEASANT_KNOWLEDGE_BASE:-pheasant-lab}
+      PHEASANT_SOURCE_NAME: ${PHEASANT_SOURCE_NAME:-swarm-lab-literature}
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-replay}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+    ports:
+      - "${PHEASANT_LAB_BIND:-127.0.0.1}:${PHEASANT_LAB_PORT:-8770}:8770"
+    volumes:
+      - lab-runs:/app/runs
+      - lab-local:/data/local
+    networks:
+      - fleet
+
+networks:
+  fleet:
+    name: ${PHEASANT_FLEET_NETWORK:-pheasant-lab_default}
+    external: true
+
+volumes:
+  lab-runs:
+  lab-local:

@@ -1,0 +1,96 @@
+# pheasant-swarm-lab in Docker: the console and a Pheasant region beside it.
+#
+#   cp .env.docker.example .env      # set the two keys it asks for
+#   docker compose up -d --build
+#   open http://127.0.0.1:8770      # the console; MCP at http://127.0.0.1:8770/mcp
+#
+# lab       the console (UI, HTTP API, MCP) and the CLI it launches runs with.
+#           Runs live in the `lab-runs` volume and record `deployment: docker`;
+#           the console lists only those (PHEASANT_LAB_RUN_SCOPE=docker).
+# pheasant  pheasant-kb 0.13.5, one container (role all), configured by
+#           deploy/pheasant/pheasant.yaml so the lab can submit, register,
+#           sync, index and search. Its own UI is on http://127.0.0.1:8765.
+#
+# The default experiment (configs/docker.yaml) uses the offline fixture
+# literature and the replay models against this real region: the first run is
+# free and needs no model key. Switch to hosted models, other providers,
+# another region or a bigger budget from the console or its MCP tools.
+#
+# To drive pheasant-kb's role-split lab fleet instead of the bundled region,
+# use docker-compose.fleet.yml (see the comment there).
+name: pheasant-swarm-lab
+
+x-region-token: &region-token
+  PHEASANT_API_TOKEN: ${PHEASANT_API_TOKEN:?set PHEASANT_API_TOKEN in .env (one random value; both containers read it)}
+
+services:
+  pheasant:
+    image: ${PHEASANT_IMAGE:-ghcr.io/esatt10/pheasant:0.13.5}
+    restart: unless-stopped
+    init: true
+    environment:
+      <<: *region-token
+      PHEASANT_CONFIG: /config/pheasant.yaml
+      # Only needed if you turn on embeddings or the assistant in the config.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    ports:
+      # Loopback: the region's own UI and API, for looking at what the lab
+      # indexed. The lab reaches it over the Compose network by name.
+      - "${PHEASANT_BIND:-127.0.0.1}:${PHEASANT_PORT:-8765}:8765"
+    volumes:
+      - ./deploy/pheasant/pheasant.yaml:/config/pheasant.yaml:ro
+      - pheasant-state:/state
+      - pheasant-memory:/memory
+      - pheasant-workspace:/workspace
+      - pheasant-exports:/exports
+    healthcheck:
+      # /ready rather than /health: the lab must not start before the region
+      # can answer (drain, standby and a missing store all fail it).
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/ready', timeout=4)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  lab:
+    image: ${PHEASANT_LAB_IMAGE:-pheasant-swarm-lab:local}
+    build:
+      context: .
+    restart: unless-stopped
+    init: true
+    depends_on:
+      pheasant:
+        condition: service_healthy
+    environment:
+      <<: *region-token
+      # The console binds 0.0.0.0 inside the container and refuses to start
+      # without a key; the browser asks for it once per tab, MCP clients send
+      # it as a bearer token.
+      PHEASANT_LAB_CONSOLE_TOKEN: ${PHEASANT_LAB_CONSOLE_TOKEN:?set PHEASANT_LAB_CONSOLE_TOKEN in .env}
+      # The bundled region, by service name. A connection chosen in the
+      # console overrides this per run (`--set url=...`).
+      PHEASANT_MCP_URL: ${PHEASANT_MCP_URL:-http://pheasant:8765/mcp}
+      PHEASANT_KNOWLEDGE_BASE: ${PHEASANT_KNOWLEDGE_BASE:-pheasant-lab}
+      PHEASANT_SOURCE_NAME: ${PHEASANT_SOURCE_NAME:-swarm-lab-literature}
+      # Hosted models and web providers, when you switch to them.
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-replay}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      LITERATURE_CONTACT_EMAIL: ${LITERATURE_CONTACT_EMAIL:-}
+      CROSSREF_MAILTO: ${CROSSREF_MAILTO:-}
+      NCBI_API_KEY: ${NCBI_API_KEY:-}
+    ports:
+      - "${PHEASANT_LAB_BIND:-127.0.0.1}:${PHEASANT_LAB_PORT:-8770}:8770"
+    volumes:
+      - lab-runs:/app/runs
+      - lab-local:/data/local
+
+volumes:
+  lab-runs:
+  lab-local:
+  pheasant-state:
+  pheasant-memory:
+  pheasant-workspace:
+  pheasant-exports:

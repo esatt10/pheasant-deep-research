@@ -74,10 +74,36 @@ configuration, so they move its digest.
 
 ## Configure
 
-A form over the YAML. Every change is a `--set`, shown as the exact command
-it will run. `plan` projects the worst-case cost as you edit, `doctor` checks
-models, providers and the region's tools before any spend, and a change that
-moves the config digest says so.
+A form over the YAML and over **one settings draft** the console keeps — the
+same draft its MCP tools edit ([mcp.md](mcp.md)), so a change an agent makes
+shows up in the open page within a few seconds (the header says who changed it
+last). Every change is a `--set`, shown as the exact command it will run.
+`plan` projects the worst-case cost as you edit, `doctor` checks models,
+prices, providers and the region's tools before any spend.
+
+- **Every field explains itself.** The `?` beside a label opens what it means,
+  the values it takes, its range, its default, whether it moves the config
+  digest and its `--set` key. **Every setting** at the bottom lists all of them,
+  filterable by text and section, with advanced fields behind a toggle.
+- **Typing is yours.** A field keeps your text while it has focus and commits
+  after a pause, on Enter or on blur. (It used to re-render from the resolved
+  value on every keystroke, so clearing a field snapped the old value back and
+  an experiment name could not be retyped.)
+- **Pheasant connection.** Named regions — the in-process mock, the Compose
+  region, pheasant-kb's lab fleet, loopback, the Docker host, and any you add
+  with a URL, knowledge base, source, token variable and optionally the token
+  itself (stored `0600`, never shown again). **Use** writes the connection's
+  fields as overrides; **Probe** asks the region whether it is ready and what
+  it holds for the lab's source.
+- **Budget.** The hard ceiling, the time ceiling, a cap on the next launch
+  only, and the five phase shares with their sum.
+- **Pheasant search.** Search mode (hybrid, or one arm alone), results per
+  search, search rounds per answer, a score floor and graph expansion.
+- **Agents & models.** Provider, model, reasoning level and output cap per
+  role, what the role does, how many calls it makes, and the recommended model
+  and reasoning level with one click (or **Use recommended for all**). The
+  price list sits under it: a model with no price is refused before any spend.
+- **Run name.** A label for the run the next launch makes, shown in Runs.
 
 ![Configure](images/configure.png)
 
@@ -90,12 +116,17 @@ Under **Research topics**, **+ New topic** opens a form.
 
    ![An intent, typed](images/topic-intent-typed.png)
 
-2. **Draft from intent.** The planner's model proposes a title, seed terms
-   and facets, through `pheasant-lab draft-topic` under its own small budget
-   (`--max-cost-usd`, default $0.25, reserved before the call). Everything it
-   fills in stays editable. Under the offline `replay` provider the draft is
-   rule-based and says so. With a hosted model it expands the field's
-   vocabulary: synonyms, older names, identifiers.
+2. **Add detail, then generate.** **Details** takes what the intent leaves
+   out: background, what must be covered or excluded, who the answer is for;
+   the planner reads it after the intent on every run. **Generate with GPT-6.1
+   Sol** or **GPT-6 Luna** drafts the topic in one click, reading everything in
+   the form as context — intent, title, details, the facets you wrote, the
+   window, preferred types — and **replaces** the form with the draft (it says
+   which model wrote it and what it cost). **Draft with the planner's model**
+   uses the configured planner instead; offline, under `replay`, that draft is
+   rule-based and says so. Every call goes through `pheasant-lab draft-topic`
+   under its own small budget (`--max-cost-usd`, default $0.25, reserved
+   before the call), so a hosted model needs a price first.
 
    ![The drafted topic, ready to edit](images/topic-intent-drafted.png)
 
@@ -121,9 +152,19 @@ A topic saved from an intent alone ran end to end on the offline demo:
 
 ![A run of a topic saved from an intent alone](images/live-intent-run.png)
 
+## Runs
+
+Every run directory the console can see, with its name, notes and stages. The
+**⋯** menu renames and annotates a run (console bookkeeping; the run's own
+files are never rewritten), keeps it (exempt from retention), renders or
+re-renders its reports, deletes its reports (derived, so re-renderable) and
+deletes the whole run after you type its id. In the Docker image the list holds
+only runs made in Docker ([docker.md](docker.md)).
+
 ## Live
 
-A run as it happens, from its append-only trace: the phase stepper, the swarm
+A run as it happens, from its append-only trace. It opens on the
+**constellation**; the tabs switch to swimlanes or both. the phase stepper, the swarm
 as a tree, a **constellation** and **swimlanes**, the raw event stream,
 budget, facet coverage and a custody funnel.
 
