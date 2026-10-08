@@ -471,8 +471,9 @@ class Operations:
         if context:
             argv += ["--context-json", json.dumps(context)]
         argv += ["--max-cost-usd", str(max_cost_usd or self.console.draft_budget_usd)]
-        code, output = self.console.launcher.run_command(argv)
+        code, stdout, stderr = self.console.launcher.run_command_streams(argv)
         if code != 0:
+            output = stdout + stderr
             message = output.strip().splitlines()[-1] if output.strip() else "failed"
             message = message.removeprefix("refused: ")
             if "no price for model" in message:
@@ -484,7 +485,7 @@ class Operations:
                     "console."
                 )
             raise ValueError(message)
-        return json.loads(output[output.index("{") :])
+        return json.loads(stdout)
 
     # -- plan / doctor ---------------------------------------------------
     def _cli(self, verb: str, extra: list[str]) -> tuple[int, str]:

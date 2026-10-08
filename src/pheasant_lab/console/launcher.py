@@ -266,6 +266,14 @@ class Launcher:
     def run_command(self, argv: list[str], *, timeout: float = 120.0) -> tuple[int, str]:
         """Run a short, read-only command (plan, doctor) and capture its output."""
 
+        code, stdout, stderr = self.run_command_streams(argv, timeout=timeout)
+        return code, stdout + stderr
+
+    def run_command_streams(
+        self, argv: list[str], *, timeout: float = 120.0
+    ) -> tuple[int, str, str]:
+        """Run a short command while keeping machine output separate from logs."""
+
         completed = subprocess.run(
             self._python(argv),
             cwd=self.project_root,
@@ -274,7 +282,7 @@ class Launcher:
             timeout=timeout,
             env=self._env(),
         )
-        return completed.returncode, (completed.stdout or "") + (completed.stderr or "")
+        return completed.returncode, completed.stdout or "", completed.stderr or ""
 
     def config_path(self, config: str) -> Path:
         return self._config_path(config)
