@@ -47,10 +47,15 @@ collection:
   #               minimum_independent_source_families,
   #               minimum_review_or_primary_sources, maximum_duplicate_rate
   profile: ${COLLECTION_PROFILE:-scholarly}
-  max_depth: 2
-  max_concurrent_agents: 3
+  # Allow later rounds to close coverage gaps and demonstrate saturation.
+  max_depth: 5
+  # Sequential branches reduce pressure on scholarly provider rate limits.
+  max_concurrent_agents: 1
   permit_abstract_only: true
   download_full_text_only_when_licensed: true
+  # Abstract collection; prefer enables licensed PDFs with abstract fallback.
+  # PDF uploads must fit the region's MCP request limit after base64 encoding.
+  full_text_mode: null
   # Provider order is tried left to right; a provider that fails is recorded
   # as an error and the next one is tried. `fixtures` reads
   # tests/fixtures/literature and makes an offline run possible. Web

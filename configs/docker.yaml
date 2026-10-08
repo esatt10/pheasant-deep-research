@@ -31,15 +31,22 @@ experiment:
 
 collection:
   profile: ${COLLECTION_PROFILE:-scholarly}
-  max_depth: 2
-  max_research_agents: 3
-  max_concurrent_agents: 2
-  max_search_rounds_per_agent: 4
-  max_sources_per_subtopic: 12
+  # Leave room for gap-filling and saturation after the first discovery round.
+  # These remain ordinary settings editable in the console or with --set.
+  max_depth: 5
+  max_research_agents: 5
+  max_concurrent_agents: 1
+  max_search_rounds_per_agent: 8
+  # Discovery fills this candidate pool before acquisition rejects items.
+  max_sources_per_subtopic: 40
+  max_results_per_provider: 6
   allowed_source_types: [journal_article, preprint, review, proceedings]
   require_stable_identifier: true
   permit_abstract_only: true
   download_full_text_only_when_licensed: true
+  # Abstract collection avoids the MCP request limit for base64 PDF uploads.
+  # Set prefer for licensed PDFs with abstract fallback, or required for PDFs only.
+  full_text_mode: null
   providers: [fixtures]
   provider_timeout_seconds: 10
   provider_max_retries: 1
