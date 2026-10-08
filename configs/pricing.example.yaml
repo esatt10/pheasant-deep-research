@@ -43,3 +43,22 @@ models:
   "gpt-6.1-sol": { input: 2.00, output: 10.00 }
   "gpt-6-sol": { input: 2.00, output: 10.00 }
   "gpt-6-luna": { input: 0.10, output: 0.50 }
+
+  # Anthropic Claude 5.5 family, first-party API, checked 2026-10-08 against
+  # Anthropic's published rates (re-check https://www.anthropic.com/pricing
+  # before a large run).
+  #
+  #   claude-opus-5-5    effort low|medium|high|xhigh|max (default medium);
+  #                      thinking cannot be turned off, so none is refused.
+  #   claude-sonnet-5-5  effort none|low|medium|high|xhigh|max (default high).
+  #   claude-haiku-5-5   effort none|low|medium|high|xhigh|max (default medium).
+  #
+  # What the budget guard does not model: cache-read discounts (the lab sends
+  # no cache_control, so nothing is cached); Batch at half price and Fast mode
+  # at 2x (the lab requests neither); and Haiku 5.5's long-prompt rate, $0.50
+  # input and $2.50 output for a prompt over 100,000 tokens - the lab's prompts
+  # are a few thousand tokens, nowhere near it. Thinking bills as output and
+  # comes out of the same max_tokens the guard reserves, so it is covered.
+  "claude-opus-5-5": { input: 4.00, output: 20.00 }
+  "claude-sonnet-5-5": { input: 2.00, output: 10.00 }
+  "claude-haiku-5-5": { input: 0.10, output: 0.50 }

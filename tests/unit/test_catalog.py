@@ -145,3 +145,16 @@ def test_a_reasoning_level_the_model_refuses_is_caught_before_spend() -> None:
         "xhigh",
         "max",
     ]
+
+
+def test_the_claude_5_5_family_is_priced_and_its_effort_floor_is_checked() -> None:
+    config = _demo()
+    for model in ("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"):
+        assert model in config.pricing.models, model
+    # Opus 5.5 cannot turn thinking off; Sonnet and Haiku 5.5 can.
+    assert unsupported_effort("claude-opus-5-5", "none")
+    assert unsupported_effort("claude-sonnet-5-5", "none") is None
+    assert unsupported_effort("claude-haiku-5-5", "none") is None
+    for model in ("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"):
+        assert unsupported_effort(model, "minimal")
+        assert unsupported_effort(model, "xhigh") is None

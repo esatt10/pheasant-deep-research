@@ -53,12 +53,21 @@ PROVIDERS: tuple[str, ...] = ("replay", "openai", "anthropic")
 #: of ``minimal``, and gpt-6.1-sol refuses ``none`` too.
 REASONING_EFFORTS: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 #: What the models we recommend accept, checked 2026-10-07 (OpenAI's model
-#: pages as relayed by the listings cited in configs/pricing.example.yaml). A
-#: model not named here is not checked: the provider decides.
+#: pages as relayed by the listings cited in configs/pricing.example.yaml) and
+#: 2026-10-08 (Anthropic's model documentation). A model not named here is not
+#: checked: the provider decides.
+#:
+#: The Claude 5.5 family takes ``output_config.effort`` low..max and nothing
+#: called ``minimal``. ``none`` turns thinking off where the model allows it:
+#: Haiku 5.5 (``disabled``) and Sonnet 5.5 (``between_tools``); Opus 5.5
+#: cannot turn thinking off at all, so ``low`` is its floor.
 MODEL_REASONING: dict[str, tuple[str, ...]] = {
     "gpt-6.1-sol": ("low", "medium", "high", "xhigh", "max"),
     "gpt-6-sol": ("none", "low", "medium", "high", "xhigh", "max"),
     "gpt-6-luna": ("none", "low", "medium", "high", "xhigh", "max"),
+    "claude-opus-5-5": ("low", "medium", "high", "xhigh", "max"),
+    "claude-sonnet-5-5": ("none", "low", "medium", "high", "xhigh", "max"),
+    "claude-haiku-5-5": ("none", "low", "medium", "high", "xhigh", "max"),
 }
 
 
@@ -658,20 +667,23 @@ DOCS: dict[str, Doc] = {
     "models.<role>.model": Doc(
         "The model id sent to the provider. It must have a price in the pricing file, or doctor "
         "refuses the run: a model treated as free is a budget guard that does not exist.",
-        "A provider model id, e.g. gpt-6.1-sol or gpt-6-luna; replay:<name> offline.",
+        "A provider model id, e.g. gpt-6.1-sol, gpt-6-luna, claude-opus-5-5, claude-sonnet-5-5 "
+        "or claude-haiku-5-5; replay:<name> offline.",
         suggestions=MODEL_SUGGESTIONS,
     ),
     "models.<role>.reasoning_effort": Doc(
         "How long the model may think before answering; thinking tokens bill as output. OpenAI "
-        "receives it as reasoning.effort; Anthropic maps medium and up to extended thinking. "
-        "Reasoning models ignore temperature.",
-        "Empty (the model's default, medium for GPT-6), or none, low, medium, high, xhigh, max. "
-        "Model-dependent: gpt-6.1-sol refuses none, and no GPT-6 model takes minimal.",
+        "receives it as reasoning.effort; Anthropic as output_config.effort, with none turning "
+        "thinking off. Reasoning models ignore temperature, and no Claude model is sent one.",
+        "Empty (the model's default: medium for GPT-6, Opus 5.5 and Haiku 5.5, high for Sonnet "
+        "5.5), or none, low, medium, high, xhigh, max. Model-dependent: gpt-6.1-sol and "
+        "claude-opus-5-5 refuse none, and no GPT-6 or Claude model takes minimal.",
         choices=(None, *REASONING_EFFORTS),
         label="reasoning level",
     ),
     "models.<role>.temperature": Doc(
-        "Sampling temperature. 0 is the reproducible choice; not sent to reasoning models.",
+        "Sampling temperature. 0 is the reproducible choice; not sent to reasoning models or to "
+        "Anthropic, whose current models refuse it.",
         "0-2.",
         minimum=0,
         maximum=2,
