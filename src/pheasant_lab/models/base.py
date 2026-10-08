@@ -42,6 +42,13 @@ class ModelRequest:
     seed: int | None = None
     tools: list[dict[str, Any]] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        # Responses JSON mode checks input messages, not just instructions.
+        # Put the requirement on the request so reservations and prompt
+        # digests cover the same text that hosted providers actually send.
+        if "json" not in self.user.lower():
+            self.user += "\n\nReturn a JSON object."
+
     @property
     def prompt_text(self) -> str:
         return f"{self.system}\n\n{self.user}"

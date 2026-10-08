@@ -504,6 +504,22 @@ make check    # everything CI runs
 
 ## Security, privacy and licensing
 
+For original research PDFs, choose `collection.full_text_mode: required` in
+the console (or `prefer` to allow a recorded abstract fallback). Map
+`argument_map.ingest.content_encoding: content_encoding` against a Pheasant
+region that advertises this argument. The lab downloads permitted original
+PDFs into the run's `artifacts/permitted-content/` directory and submits their
+bytes as PDF files with provenance and ingest receipts. Pheasant handles PDF
+parsing and indexing; researchers use abstracts for lightweight benchmark
+claims, while the answering arms receive the region's indexed search passages
+from original PDFs. When full-document lookup fails, the lab can recover its
+saved abstract and labels that fallback explicitly.
+Unavailable files and licence refusals are recorded. The Docker profile
+prefers original PDFs and requires at least 35% of retained live-provider
+sources to be originals before collection can be called sufficient. Fixture
+runs bypass that PDF condition; the unset mode keeps the abstract workflow
+available for other profiles.
+
 `.env`, run content, downloaded papers and raw prompts are git-ignored.
 Secrets are resolved at runtime and replaced with a **stable** redaction token
 in every trace — stable so a reader can tell that two calls used the same

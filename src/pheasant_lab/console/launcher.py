@@ -156,6 +156,23 @@ class Launcher:
         label: str | None = None,
     ) -> Launch:
         config_path = self._config_path(config)
+        if kind in ("pipeline", "collect"):
+            from ..settings import load_config
+
+            resolved = load_config(
+                config_path,
+                overrides=dict(item.split("=", 1) for item in overrides or [] if "=" in item),
+                project_root=self.project_root,
+                env_file=".env",
+                environ=self._env(),
+            )
+            selected = resolved.topic(topic) if topic else resolved.topics[0]
+            if selected.intent and "fixtures" in resolved.collection.providers:
+                raise ValueError(
+                    "This topic has a research intent, but the fixtures provider searches only "
+                    "bundled synthetic Dsup/tardigrade records. Select live providers under "
+                    "Configure > Collection before launching this topic, or use Offline demo."
+                )
         # Relative to the project root, which is the child's cwd: the argv a
         # run records is then the one a person would type, on any machine.
         common = ["--config", str(config_path.relative_to(self.project_root.resolve()))]

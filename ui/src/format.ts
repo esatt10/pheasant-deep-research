@@ -30,6 +30,14 @@ export const ROLE_COLOR: Record<string, string> = {
   indexer: "var(--r-pheasant)",
 };
 
+export const ARM_DESCRIPTION: Record<string, string> = {
+  S0: "Answer without the knowledge base",
+  C0: "Control retrieval without Pheasant",
+  P0: "Pheasant retrieval from the sealed source snapshot",
+  P1: "Pheasant retrieval with seeded memory",
+  P2: "Pheasant retrieval with tuned search",
+};
+
 export const armColor = (arm: string) => `var(--arm-${arm}, var(--muted))`;
 
 export const STAGE_LABEL: Record<string, string> = {

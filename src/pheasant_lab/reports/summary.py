@@ -100,7 +100,7 @@ def write_summary(
     lines: list[str] = []
     lines.append(f"# {manifest.get('experiment_name', 'run')} — summary")
     lines.append("")
-    lines.append(f"Run `{manifest.get('run_id')}` · rendered {isonow()}")
+    lines.append(f"Research run · rendered {isonow()}")
     lines.append("")
     lines.append("```yaml")
     for key in HEALTH_KEYS:

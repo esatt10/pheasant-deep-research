@@ -103,6 +103,7 @@ class SourceRecord:
     idempotency_key: str | None = None
     round: int = 0
     duplicate_of: str | None = None
+    local_artifact_ref: str | None = None
 
     @property
     def retained(self) -> bool:
@@ -150,6 +151,7 @@ class SourceRecord:
             round=self.round,
             duplicate_of=self.duplicate_of,
             provenance_complete=self.provenance_complete(),
+            local_artifact_ref=self.local_artifact_ref,
         )
 
 
@@ -457,6 +459,7 @@ def rehydrate(
             idempotency_key=row.get("idempotency_key"),
             round=int(row.get("round") or 0),
             duplicate_of=row.get("duplicate_of"),
+            local_artifact_ref=row.get("local_artifact_ref"),
         )
         state.add_source(record)
 

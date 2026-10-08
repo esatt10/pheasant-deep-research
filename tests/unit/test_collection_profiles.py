@@ -449,3 +449,21 @@ def test_the_balanced_cap_asks_every_provider():
     found = _discover(config, [first, second])
     assert first.limits == [8] and second.limits == [8]
     assert {c.provider for c in found} == {"one", "two"}
+
+
+def test_live_intent_queries_keep_topic_scope_when_terminology_is_ambiguous():
+    from pheasant_lab.orchestration.planner import Subtopic
+
+    subtopic = Subtopic(
+        subtopic_id="retrieval",
+        facet_ids=["retrieval"],
+        question="Compare lexical, vector and graph retrieval for query intent routing. " * 5,
+        terminology=["lexical retrieval", "keyword search", "semantic routing"],
+    )
+    queries = subtopic.queries(rounds=4, scope="query intent routing")
+    assert len(queries) == 4
+    assert all("query intent routing" in query and len(query) <= 200 for query in queries)
+    assert "query intent routing lexical retrieval" in queries
+    assert "lexical retrieval" not in queries
+    # Explicit offline fixture probes keep their original query ladder.
+    assert subtopic.queries(rounds=2)[1] == "lexical retrieval"

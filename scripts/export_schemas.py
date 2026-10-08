@@ -216,6 +216,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "acquisition_event_id": NULLABLE_STRING,
             "researcher_agent_id": NULLABLE_STRING,
             "artifact_id": NULLABLE_STRING,
+            "local_artifact_ref": NULLABLE_STRING,
             "idempotency_key": NULLABLE_STRING,
             "provenance_complete": {"type": "boolean"},
             "facet_ids": {"type": "array", "items": {"type": "string"}},

@@ -116,6 +116,7 @@ class Orchestrator:
             self.config.stopping,
             topic,
             authoritative_types=self.config.collection.authoritative_source_types,
+            require_original_pdfs=any(provider != "fixtures" for provider in self.config.collection.providers),
         )
 
         branches: list[dict[str, Any]] = []

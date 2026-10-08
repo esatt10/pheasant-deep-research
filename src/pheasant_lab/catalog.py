@@ -357,6 +357,13 @@ DOCS: dict[str, Doc] = {
         "Fetch full text only when the licence allows it (open access).",
         "true / false. Leave true.",
     ),
+    "collection.full_text_mode": Doc(
+        "Download original research PDFs and send their bytes to Pheasant for parsing. "
+        "Required skips unavailable files; prefer permits an explicitly recorded abstract fallback. "
+        "Empty retains the offline abstract collection path.",
+        "prefer / required / empty",
+        suggestions=("prefer", "required"),
+    ),
     "collection.providers": Doc(
         "Search providers, tried left to right. `fixtures` is the offline literature the demo uses.",
         "A list. Web providers need BRAVE_SEARCH_API_KEY / TAVILY_API_KEY.",
@@ -1360,6 +1367,28 @@ def advise(config: LabConfig) -> list[dict[str, Any]]:
     """Advice the form shows beside the fields: things that resolve, and mislead."""
 
     notes: list[Check] = []
+    custom_intent = any(topic.intent for topic in config.topics)
+    if custom_intent and "fixtures" in config.collection.providers:
+        notes.append(
+            Check(
+                "collection.providers",
+                "warn",
+                "The fixtures provider searches bundled synthetic Dsup/tardigrade records. "
+                "Changing the topic does not change that corpus; select live providers for "
+                "research on your topic.",
+            )
+        )
+    replay_roles = [role for role, spec in config.models.items() if spec.provider == "replay"]
+    if custom_intent and replay_roles:
+        notes.append(
+            Check(
+                "models.planner.provider",
+                "warn",
+                "Replay models use deterministic rules for "
+                + ", ".join(replay_roles)
+                + ". Select recommended models under Agents & models for LLM research.",
+            )
+        )
     for role, spec in sorted(config.models.items()):
         problem = unsupported_effort(spec.model, spec.reasoning_effort)
         if problem:

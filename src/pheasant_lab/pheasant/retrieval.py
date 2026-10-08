@@ -263,6 +263,9 @@ class Retriever:
         #: for hits that name an artifact without a path (a graph-arm
         #: relationship hit carries only the node id).
         self.artifact_paths: dict[str, str] = {}
+        #: Saved source records are this run's own copy of what it submitted.
+        self.source_records: dict[str, dict[str, Any]] = {}
+        self._local_documents: dict[str, tuple[str | None, str]] = {}
         self._argument_map: dict[str, str] = dict(config.argument_map.get("search") or {})
         self._kb_field = str(config.argument_map.get("knowledge_base_field", "knowledge_base"))
         self._documents: dict[tuple[str, str], str | None] = {}
@@ -356,25 +359,54 @@ class Retriever:
         payload = outcome.result.payload()
         return dict(payload) if isinstance(payload, Mapping) else None
 
+    def _local_document(self, artifact_id: str) -> tuple[str | None, str]:
+        """Read the abstract already recorded for a submitted source.
+
+        The saved abstract is more complete than a capped search preview and
+        remains available even when the region's file-summary tool fails.
+        Original PDFs stay in the indexed source and are read through search
+        passages; this adapter does not put whole PDFs in model prompts.
+        """
+
+        if artifact_id in self._local_documents:
+            return self._local_documents[artifact_id]
+        source_id = self.artifact_sources.get(artifact_id, "")
+        source = self.source_records.get(source_id, {})
+        result: tuple[str | None, str] = (None, "preview")
+        if source.get("abstract"):
+            result = (f"{source.get('title') or ''}\n\n{source['abstract']}", "abstract")
+        self._local_documents[artifact_id] = result
+        return result
+
     def hydrate(self, passages: Sequence[dict[str, Any]]) -> None:
-        """Replace each passage's preview with the document it came from.
+        """Use the run's saved abstract or preserve a relevant PDF search passage.
 
         A search hit carries a preview the region caps (500 characters on
         pheasant), and this lab's documents open with front matter - so an
-        answerer handed previews reads metadata and very little of the
-        abstract, and its score measures the preview length rather than
-        retrieval. Pheasant's own answering path reads whole documents for
-        the same reason. A passage that cannot be fetched keeps its preview
-        and says so in ``text_source``; nothing is ever invented.
+        answerer handed previews of the lab's Markdown submissions reads
+        metadata and very little of the abstract. The run's own source record
+        recovers that abstract without another region call. Original PDFs keep
+        their indexed search passages. Unknown sources can still use the
+        configured fetch tool; failures retain the preview and are labelled.
         """
 
-        if not self.capabilities.has("fetch"):
-            for passage in passages:
-                passage.setdefault("text_source", "preview")
-            return
         for passage in passages:
             passage.setdefault("text_source", "preview")
             artifact_id = str(passage.get("artifact_id") or "")
+            if artifact_id:
+                source = self.source_records.get(self.artifact_sources.get(artifact_id, ""), {})
+                if source.get("local_artifact_ref"):
+                    # Keep the region's relevant PDF passage. Do not replace
+                    # original-paper text with the provider's abstract or
+                    # load the whole PDF into a model prompt.
+                    continue
+                local_text, local_source = self._local_document(artifact_id)
+                if local_text:
+                    passage["text"] = local_text
+                    passage["text_source"] = local_source
+                    continue
+            if not self.capabilities.has("fetch"):
+                continue
             candidates: list[tuple[str, str]] = []
             # The path this lab submitted the artifact under comes first: it
             # is known rather than reported, and a hit's `locator` may be a

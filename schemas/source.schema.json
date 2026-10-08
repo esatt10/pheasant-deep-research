@@ -68,6 +68,12 @@
     "license": {
       "type": "string"
     },
+    "local_artifact_ref": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "peer_reviewed": {
       "type": "boolean"
     },

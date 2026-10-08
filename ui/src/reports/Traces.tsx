@@ -161,7 +161,6 @@ export function Traces({ runId, actorId }: { runId: string; actorId?: string }) 
           <div className="card__head">
             <span className="sw" style={{ width: 10, height: 10, borderRadius: 3, background: actorColor(current) }} />
             {trace?.label ?? current?.label ?? "…"}
-            <span className="sub mono">{actor}</span>
           </div>
           {current ? (
             <div className="card__body traces__stats">

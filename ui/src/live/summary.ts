@@ -1,7 +1,7 @@
 import type { LabEvent } from "../types";
 
 /** One line a person can read, per event type. Unknown types show their payload keys. */
-export function summarize(event: LabEvent): string {
+export function summarize(event: LabEvent, sourceTitles: ReadonlyMap<string, string> = new Map()): string {
   const p = event.payload as Record<string, any>;
   switch (event.event_type) {
     case "collection.search":
@@ -11,7 +11,9 @@ export function summarize(event: LabEvent): string {
     case "collection.discovered":
       return `${p.title ?? p.source_id} · ${p.stable_identifier ?? ""}`;
     case "collection.acquired":
-      return `${p.source_id} · ${p.mode ?? ""}${p.licence ? ` · ${p.licence}` : ""}`;
+      return `${p.title ?? sourceTitles.get(String(p.source_id)) ?? "Research source"} · ${p.mode === "original_pdf" ? "original PDF" : "abstract only"}${p.licence ? ` · ${p.licence}` : ""}`;
+    case "collection.acquisition_blocked":
+      return `${sourceTitles.get(String(p.source_id)) ?? "Research source"} · PDF unavailable: ${p.reason ?? "unknown reason"}`;
     case "collection.round":
       return `round ${p.round} closed · ${p.acquired ?? 0} acquired · decision ${p.decision ?? "—"}`;
     case "collection.audit":
@@ -26,7 +28,7 @@ export function summarize(event: LabEvent): string {
       return `${p.server_name} ${p.server_version} · protocol ${p.protocol_version}`;
     case "ingest.sync":
       return p.disposition === "queued"
-        ? `queued · task ${p.region?.task_id ?? ""} · waiting for an indexer to claim it`
+        ? "Queued for indexing · waiting for an indexer to claim the documents"
         : `sync ${p.disposition}`;
     case "ingest.barrier": {
       const queue = (p.queue ?? []) as { state: string; claimed_by?: string; waiting_seconds?: number }[];
@@ -36,7 +38,7 @@ export function summarize(event: LabEvent): string {
       }`;
     }
     case "arm.answered":
-      return `${p.question_id} · ${p.abstained ? "abstained" : `${p.claims} claims`} · ${p.retrieved ?? 0} retrieved · ${Number(p.latency_ms ?? 0).toFixed(0)} ms`;
+      return `Benchmark question · ${p.abstained ? "abstained" : `${p.claims} claims`} · ${p.retrieved ?? 0} retrieved · ${Number(p.latency_ms ?? 0).toFixed(0)} ms`;
     case "benchmark.built":
       return `${Object.values(p.cohorts ?? {}).reduce((a: number, b: any) => a + Number(b), 0)} questions frozen`;
     case "memory.seeded":

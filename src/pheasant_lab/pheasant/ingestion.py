@@ -9,13 +9,15 @@ records which spelling was used.
 
 from __future__ import annotations
 
+import base64
 import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from .. import ids
-from ..hashing import digest, digest_text
+from ..hashing import digest, digest_file, digest_text
 from ..settings import PheasantFile
 from .capabilities import CapabilityMap
 from .client import PheasantClient
@@ -70,6 +72,8 @@ class IngestRequest:
 
     @property
     def content_digest(self) -> str:
+        if self.payload.local_artifact_ref:
+            return digest_file(Path(self.payload.local_artifact_ref))
         return (
             digest_text(self.payload.text or "")
             if self.payload.text
@@ -94,12 +98,23 @@ class IngestRequest:
         if self.relative_path:
             return self.relative_path
         slug = (self.source.stable_identifier or self.source_id).replace("/", "_").replace(":", "_")
-        return f"{self.topic_id}/{slug}.md"
+        extension = ".pdf" if self.payload.media_type == "application/pdf" else ".md"
+        return f"{self.topic_id}/{slug}{extension}"
 
     def as_document(self, argument_map: Mapping[str, str]) -> dict[str, Any]:
+        text = self.payload.text
+        if argument_map.get("content_encoding"):
+            content = (
+                Path(self.payload.local_artifact_ref).read_bytes()
+                if self.payload.local_artifact_ref
+                else text.encode("utf-8")
+            )
+            text = base64.b64encode(content).decode("ascii")
+        elif self.payload.local_artifact_ref:
+            raise ValueError("original files require a configured ingest content_encoding argument")
         return {
             argument_map.get("document_path", "relative_path"): self.path(),
-            argument_map.get("document_text", "text"): self.payload.text,
+            argument_map.get("document_text", "text"): text,
             argument_map.get("document_key", "idempotency_key"): self.idempotency_key,
             argument_map.get("document_metadata", "metadata"): self.metadata(),
         }
@@ -204,6 +219,8 @@ class Ingestor:
             self._argument_map.get("source_name", "source_name"): self.config.source_name,
             self._argument_map.get("submission_id", "submission_id"): submission_id,
         }
+        if self._argument_map.get("content_encoding"):
+            arguments[self._argument_map["content_encoding"]] = "base64"
         outcome = self.client.call(
             tool,
             arguments,
@@ -334,8 +351,9 @@ class Ingestor:
         if not self.capabilities.has("ingest_acknowledge"):
             return {"skipped": "no acknowledge capability configured"}
         arguments: dict[str, Any] = {self._kb_field: self.config.knowledge_base}
-        if submission_id:
-            arguments["submission_id"] = submission_id
+        submissions = self._submissions(submission_id)
+        if not submissions:
+            return {"skipped": "no recorded submission to acknowledge"}
         deadline = self._clock.monotonic() + (
             self.config.timeout_seconds if wait_seconds is None else wait_seconds
         )
@@ -344,25 +362,33 @@ class Ingestor:
         polls = 0
         while True:
             polls += 1
-            outcome = self.client.call(
-                self.capabilities.tool("ingest_acknowledge"),
-                arguments,
-                idempotent=True,
-                stage="index",
-            )
-            payload = _as_mapping(outcome.result.payload() if outcome.result else {})
-            # A region that lists what it acknowledged is read directly; one
-            # that counts it is read back through the receipts.
-            listed = [
-                row
-                for name in ("receipts", "acknowledged")
-                if isinstance(payload.get(name), list)
-                for row in payload[name]
-            ]
-            for row in listed:
-                self._fold(row)
-            if not listed:
-                self._refresh(submission_id)
+            reports = []
+            for submission in submissions:
+                outcome = self.client.call(
+                    self.capabilities.tool("ingest_acknowledge"),
+                    {**arguments, "submission_id": submission},
+                    idempotent=True,
+                    stage="index",
+                )
+                report = _as_mapping(outcome.result.payload() if outcome.result else {})
+                if not isinstance(report.get("still_accepted"), int):
+                    raise RuntimeError(
+                        "region returned no pending receipt count for this submission"
+                    )
+                for name in ("receipts", "acknowledged"):
+                    if isinstance(report.get(name), list):
+                        for row in report[name]:
+                            self._fold(row)
+                self._refresh(submission)
+                reports.append(report)
+            # No knowledge-base-wide count belongs to this run's barrier.
+            payload = {
+                "submission_ids": submissions,
+                "acknowledged": sum(
+                    r["acknowledged"] for r in reports if isinstance(r.get("acknowledged"), int)
+                ),
+                "still_accepted": sum(r["still_accepted"] for r in reports),
+            }
             pending = payload.get("still_accepted")
             waited = round(self._clock.monotonic() - started, 3)
             if not isinstance(pending, int) or pending <= 0:
@@ -443,15 +469,18 @@ class Ingestor:
 
         if not self.capabilities.has("ingest_status"):
             return
-        submissions = (
-            [submission_id]
-            if submission_id
-            else sorted({r.submission_id for r in self.ledger.receipts if r.submission_id})
-        )
+        submissions = self._submissions(submission_id)
         for submission in submissions:
             payload = self.ingest_status(submission_id=submission)
             for row in payload.get("receipts") or []:
                 self._fold(row)
+
+    def _submissions(self, submission_id: str | None) -> list[str]:
+        return (
+            [submission_id]
+            if submission_id
+            else sorted({r.submission_id for r in self.ledger.receipts if r.submission_id})
+        )
 
     def _fold(self, row: Any) -> None:
         if not isinstance(row, Mapping) or not row.get("idempotency_key"):
@@ -485,12 +514,49 @@ class Ingestor:
                 "against receipts this lab holds, which cannot see an artifact lost after a receipt",
             }
         arguments: dict[str, Any] = {self._kb_field: self.config.knowledge_base}
-        if submission_id:
-            arguments["submission_id"] = submission_id
-        outcome = self.client.call(
-            self.capabilities.tool("ingest_reconcile"), arguments, idempotent=True, stage="index"
+        submissions = self._submissions(submission_id)
+        if not submissions:
+            return {"skipped": "no recorded submission to reconcile"}
+        reports = []
+        for submission in submissions:
+            outcome = self.client.call(
+                self.capabilities.tool("ingest_reconcile"),
+                {**arguments, "submission_id": submission},
+                idempotent=True,
+                stage="index",
+            )
+            reports.append(_as_mapping(outcome.result.payload() if outcome.result else {}))
+        payload: dict[str, Any] = {"submission_ids": submissions, "scope": "run"}
+        for name in (
+            "submitted",
+            "indexed",
+            "rejected",
+            "failed",
+            "accepted_not_indexed",
+            "resubmitted",
+            "unaccounted",
+            "silent_loss",
+        ):
+            if all(isinstance(r.get(name), int) for r in reports):
+                payload[name] = sum(r[name] for r in reports)
+        payload["by_disposition"] = {}
+        for report in reports:
+            for name, count in (report.get("by_disposition") or {}).items():
+                payload["by_disposition"][name] = payload["by_disposition"].get(name, 0) + count
+        payload["unaccounted_receipts"] = [
+            key for r in reports for key in r.get("unaccounted_receipts", [])
+        ]
+        from collections import Counter
+
+        artifacts = Counter(r.artifact_id for r in self.ledger.receipts if r.artifact_id)
+        payload["duplicated_artifacts"] = sorted(
+            key for key, count in artifacts.items() if count > 1
         )
-        return _as_mapping(outcome.result.payload() if outcome.result else {})
+        payload["duplicated"] = len(payload["duplicated_artifacts"])
+        payload["reconciled"] = (
+            all(r.get("reconciled") is True for r in reports) and not payload["duplicated"]
+        )
+        return payload
 
     def inventory(self) -> dict[str, Any] | None:
         """What the region says it holds for this lab's source, beside the receipts.
@@ -633,7 +699,12 @@ def build_requests(
                 payload=IngestPayload(
                     media_type=str(item.get("media_type", "text/markdown")),
                     text=str(item.get("text", "")),
-                    bytes=len(str(item.get("text", "")).encode("utf-8")) or None,
+                    bytes=(
+                        Path(item["local_artifact_ref"]).stat().st_size
+                        if item.get("local_artifact_ref")
+                        else len(str(item.get("text", "")).encode("utf-8"))
+                    )
+                    or None,
                     local_artifact_ref=item.get("local_artifact_ref"),
                 ),
                 provenance=IngestProvenance(

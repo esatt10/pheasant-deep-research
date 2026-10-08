@@ -15,6 +15,7 @@ Three things it refuses to do:
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
@@ -84,6 +85,7 @@ class CoverageAuditor:
             config.stopping,
             topic,
             authoritative_types=config.collection.authoritative_source_types,
+            require_original_pdfs=any(provider != "fixtures" for provider in config.collection.providers),
         )
 
     def audit(
@@ -185,7 +187,11 @@ class CoverageAuditor:
             role="auditor",
             schema="audit",
             system=load_prompt("auditor"),
-            user="Summarise the audit below in at most five sentences. Do not change any number.",
+            user=(
+                "Summarise the audit below in at most five sentences. Do not change any number. "
+                "Return a JSON object with a narrative field.\n\nComputed audit:\n"
+                + json.dumps(audit.as_dict(), sort_keys=True)
+            ),
             context={"computed": audit.as_dict()},
             max_output_tokens=spec.max_output_tokens,
             temperature=spec.temperature,

@@ -292,6 +292,11 @@ class CostLedger:
         )
         try:
             yield event
+        except Exception as exc:
+            if hasattr(exc, "input_tokens") and hasattr(exc, "output_tokens"):
+                event.input_tokens = int(exc.input_tokens)
+                event.output_tokens = int(exc.output_tokens)
+            raise
         finally:
             input_price, output_price = self.price(model)
             actual = event.input_tokens * input_price + event.output_tokens * output_price

@@ -370,3 +370,25 @@ def test_a_hosted_draft_is_refused_in_words_until_it_can_be_paid_for(console) ->
     assert result["isError"]
     assert "gpt-7-hypothetical" in result["content"][0]["text"]
     assert "Model prices" in result["content"][0]["text"]
+
+
+def test_custom_intent_cannot_silently_launch_against_demo_fixtures(console) -> None:
+    base, _ = console
+    _, saved = _tool(
+        base,
+        "lab_save_topic",
+        topic={
+            "id": "intent-router",
+            "title": "Query intent routing",
+            "intent": "Understand query intent routing for hybrid retrieval.",
+            "seed_terms": ["query intent routing"],
+            "facets": [{"id": "routing", "label": "Intent routing", "weight": 1}],
+        },
+    )
+    assert saved["topic"]["id"] == "intent-router"
+    result, _ = _tool(base, "lab_launch_run", kind="pipeline")
+    assert result["isError"]
+    assert "Dsup/tardigrade" in result["content"][0]["text"]
+    assert "live providers" in result["content"][0]["text"]
+    _, launches = _call(f"{base}/api/launches")
+    assert launches == []

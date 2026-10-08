@@ -132,9 +132,9 @@ export function RunsPage() {
             {(runs.data ?? []).map((run) => (
               <tr key={run.run_id} className="clickable" onClick={() => navigate(`/live/${run.run_id}`)}>
                 <td>
-                  {run.label ? <div><b>{run.label}</b></div> : null}
-                  <div className="mono">
-                    {run.run_id}
+                  <div title={run.run_id}><b>{run.label || run.topic_title || run.experiment || "Research run"}</b></div>
+                  <div className="muted small">
+                    {run.created_at ? new Date(run.created_at).toLocaleString() : "date unavailable"}
                     {run.kept ? <span className="pill pill--accent" title="Kept: exempt from every retention rule" style={{ marginLeft: 6 }}>☆ kept</span> : null}
                   </div>
                   {run.notes ? <div className="small">{run.notes}</div> : null}
@@ -213,7 +213,7 @@ export function RunsPage() {
                 void act(() => api.updateRun(run.run_id, { label: label.trim() || null, notes: notes.trim() || null }));
               }}
             >
-              <div className="modal__header">Rename {editing.run.run_id}</div>
+              <div className="modal__header">Rename {editing.run.label || editing.run.topic_title || editing.run.experiment || "research run"}</div>
               <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 8 }}>
                 <div className="fld">
                   <label htmlFor="run-name">name</label>
@@ -234,10 +234,10 @@ export function RunsPage() {
         ) : null}
         {deleting ? (
           <ConfirmDialog
-            title={`Delete ${deleting.label ?? deleting.run_id}`}
+            title={`Delete ${deleting.label || deleting.topic_title || deleting.experiment || "research run"}`}
             body={<>The whole run directory — raw trace, projection, reports — is deleted and audited. It cannot be brought back.</>}
             action="Delete run"
-            confirmText={deleting.run_id}
+            confirmText="DELETE"
             onConfirm={async () => {
               await api.deleteRun(deleting.run_id);
               void runs.refresh();
@@ -247,7 +247,7 @@ export function RunsPage() {
         ) : null}
         {dropping ? (
           <ConfirmDialog
-            title={`Delete the reports of ${dropping.label ?? dropping.run_id}`}
+            title={`Delete the reports of ${dropping.label || dropping.topic_title || dropping.experiment || "research run"}`}
             body={<>Reports are derived from the raw trace; <b>Regenerate reports</b> renders them again.</>}
             action="Delete reports"
             onConfirm={async () => {
@@ -298,7 +298,7 @@ function RunMenu({
   );
   return (
     <span className="menu" onClick={(e) => e.stopPropagation()}>
-      <button className="btn btn--small btn--ghost" aria-haspopup="menu" aria-expanded={open} aria-label={`More actions for ${run.run_id}`} onClick={() => setOpen((v) => !v)}>
+      <button className="btn btn--small btn--ghost" aria-haspopup="menu" aria-expanded={open} aria-label={`More actions for ${run.label || run.topic_title || run.experiment || "research run"}`} onClick={() => setOpen((v) => !v)}>
         ⋯
       </button>
       {open ? (

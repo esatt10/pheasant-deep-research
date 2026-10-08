@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from .base import ModelProvider, ModelRequest, ModelResponse
+from .base import ModelProvider, ModelRequest, ModelResponse, StructuredOutputError
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
@@ -54,13 +54,37 @@ class OpenAIProvider(ModelProvider):
                 },
                 json=body,
             )
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                try:
+                    detail = response.json().get("error", {}).get("message")
+                except (ValueError, AttributeError):
+                    detail = None
+                if detail:
+                    raise httpx.HTTPStatusError(
+                        f"OpenAI HTTP {response.status_code}: {detail}",
+                        request=exc.request,
+                        response=exc.response,
+                    ) from exc
+                raise
             payload = response.json()
 
         text = _output_text(payload)
         usage = payload.get("usage") or {}
+        try:
+            if payload.get("status") == "incomplete":
+                reason = (payload.get("incomplete_details") or {}).get("reason", "unknown")
+                raise StructuredOutputError(f"OpenAI response incomplete: {reason}")
+            data = self.parse_structured(text)
+        except StructuredOutputError as exc:
+            # A paid response may be unusable. Keep its billed usage available
+            # to the reservation guard even when parsing refuses it.
+            exc.input_tokens = int(usage.get("input_tokens") or 0)
+            exc.output_tokens = int(usage.get("output_tokens") or 0)
+            raise
         return ModelResponse(
-            data=self.parse_structured(text),
+            data=data,
             text=text,
             provider=self.name,
             model=self.model,

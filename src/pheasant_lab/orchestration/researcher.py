@@ -15,12 +15,15 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+import httpx
+
 from .. import ids
 from ..budget import BudgetExceeded, CostLedger
 from ..lifecycle import isonow
 from ..models import ModelProvider, ModelRequest
 from ..pheasant.ingestion import Ingestor, IngestRequest, build_requests
 from ..promptlib import load as load_prompt
+from ..providers.acquisition import download_pdf
 from ..providers.base import LiteratureProvider, ProviderError, SourceCandidate
 from ..settings import LabConfig, Topic
 from ..textkit import truncate
@@ -125,8 +128,12 @@ class Researcher:
 
         found: list[SourceCandidate] = []
         seen: set[str] = set()
+        scope = None
+        if self.topic.intent and any(provider.name != "fixtures" for provider in self.providers):
+            scope = self.topic.seed_terms[0] if self.topic.seed_terms else self.topic.title
         queries = subtopic.queries(
-            rounds=min(max_rounds, self.config.collection.max_search_rounds_per_agent)
+            rounds=min(max_rounds, self.config.collection.max_search_rounds_per_agent),
+            scope=scope,
         )
         with self.tracer.span(
             "research.search",
@@ -209,7 +216,14 @@ class Researcher:
             stage="extraction",
             subtopic_id=subtopic.subtopic_id,
         ):
-            self._extract(subtopic, state, result, fresh, result.agent_id, round_)
+            self._extract(
+                subtopic,
+                state,
+                result,
+                [r for r in fresh if r.candidate.has_text],
+                result.agent_id,
+                round_,
+            )
             self._persist(subtopic, state, result, fresh, result.agent_id)
         return result
 
@@ -339,6 +353,8 @@ class Researcher:
 
         record.transition(SourceState.validated)
         self._acquire(record, result)
+        if self.config.collection.full_text_mode and not record.retained:
+            self.tracer.append("sources.jsonl", record.as_record(self.run_id))
         return record
 
     def _validate(self, candidate: SourceCandidate) -> str | None:
@@ -352,6 +368,8 @@ class Researcher:
             return "out_of_window"
         if window.to and candidate.published_at and candidate.published_at > window.to:
             return "out_of_window"
+        if collection.full_text_mode and candidate.full_text_url:
+            return None
         if not candidate.has_text and not collection.permit_abstract_only:
             return "no_text"
         if not candidate.has_text:
@@ -368,11 +386,51 @@ class Researcher:
         """
 
         candidate = record.candidate
+        licensed = any(token in (candidate.license or "").lower() for token in PERMISSIVE_LICENCES)
+        mode = self.config.collection.full_text_mode
+        if mode:
+            refusal = None
+            if not candidate.full_text_url:
+                refusal = "provider supplied no original PDF URL"
+            elif self.config.collection.download_full_text_only_when_licensed and not licensed:
+                refusal = "licence does not permit full-text retrieval"
+            else:
+                try:
+                    destination = self.tracer.paths.permitted_content / f"{record.source_id}.pdf"
+                    size = download_pdf(candidate.full_text_url, destination)
+                    record.local_artifact_ref = str(destination)
+                    record.acquisition_attempts.append(
+                        AcquisitionAttempt(isonow(), "original_pdf", candidate.full_text_url, size)
+                    )
+                except (ValueError, OSError, httpx.HTTPError) as exc:
+                    refusal = str(exc)
+            if refusal:
+                record.acquisition_attempts.append(
+                    AcquisitionAttempt(isonow(), "full_text_unavailable", refusal)
+                )
+                if (
+                    mode == "required"
+                    or not self.config.collection.permit_abstract_only
+                    or not candidate.has_text
+                ):
+                    record.transition(
+                        SourceState.blocked, reason_code="licence" if not licensed else "no_text"
+                    )
+                    result.blocked += 1
+                    self.tracer.emit(
+                        "collection.acquisition_blocked",
+                        payload={"source_id": record.source_id, "reason": refusal},
+                        agent_id=record.researcher_agent_id,
+                        agent_role="researcher",
+                        topic_id=self.topic.id,
+                    )
+                    return
         event = self.tracer.emit(
             "collection.acquired",
             payload={
                 "source_id": record.source_id,
-                "mode": "abstract",
+                "title": candidate.title,
+                "mode": "original_pdf" if record.local_artifact_ref else "abstract",
                 "licence": candidate.license,
                 "open_access": candidate.open_access,
             },
@@ -381,14 +439,17 @@ class Researcher:
             topic_id=self.topic.id,
         )
         record.acquisition_event_id = event.event_id
-        licensed = any(token in (candidate.license or "").lower() for token in PERMISSIVE_LICENCES)
-        if self.config.collection.download_full_text_only_when_licensed and not licensed:
+        if (
+            not record.local_artifact_ref
+            and self.config.collection.download_full_text_only_when_licensed
+            and not licensed
+        ):
             record.acquisition_attempts.append(
                 AcquisitionAttempt(
                     isonow(), "abstract_only", "licence does not permit full-text retrieval"
                 )
             )
-        else:
+        elif not record.local_artifact_ref:
             record.acquisition_attempts.append(
                 AcquisitionAttempt(
                     isonow(), "abstract_only", "full-text acquisition not requested for this run"
@@ -438,19 +499,23 @@ class Researcher:
         with self.tracer.span(
             "research.extract", stage="extraction", agent_id=agent_id, agent_role="researcher"
         ):
-            with self.ledger.spend(
-                bucket="collection",
-                role="researcher",
-                model=spec.model,
-                prompt=request.prompt_text,
-                max_output_tokens=spec.max_output_tokens,
-                tool_calls=0,
-            ) as cost:
-                response = self.model.complete(request)
-                cost.input_tokens = response.input_tokens
-                cost.output_tokens = response.output_tokens
-            result.cost_usd += cost.actual_usd or 0.0
-            self.tracer.emit("cost.model_call", payload=cost.as_payload())
+            cost = None
+            try:
+                with self.ledger.spend(
+                    bucket="collection",
+                    role="researcher",
+                    model=spec.model,
+                    prompt=request.prompt_text,
+                    max_output_tokens=spec.max_output_tokens,
+                    tool_calls=0,
+                ) as cost:
+                    response = self.model.complete(request)
+                    cost.input_tokens = response.input_tokens
+                    cost.output_tokens = response.output_tokens
+            finally:
+                if cost is not None:
+                    result.cost_usd += cost.actual_usd or 0.0
+                    self.tracer.emit("cost.model_call", payload=cost.as_payload())
 
         known_sources = {record.source_id for record in fresh}
         claims: list[ClaimRecord] = []
@@ -525,8 +590,11 @@ class Researcher:
                         "authors": record.candidate.authors,
                         "published_at": record.candidate.published_at,
                         "license": record.candidate.license,
-                        "text": _document(record),
-                        "media_type": "text/markdown",
+                        "text": "" if record.local_artifact_ref else _document(record),
+                        "media_type": "application/pdf"
+                        if record.local_artifact_ref
+                        else "text/markdown",
+                        "local_artifact_ref": record.local_artifact_ref,
                         "discovery_event_id": record.discovery_event_id,
                         "acquisition_event_id": record.acquisition_event_id,
                         "researcher_agent_id": agent_id,
@@ -616,7 +684,8 @@ def _render_extraction(subtopic: Subtopic, records: list[SourceRecord]) -> str:
         f"Subtopic: {subtopic.question}\n"
         f"Terminology: {', '.join(subtopic.terminology)}\n\n"
         "Extract atomic claims from the sources below. Return the JSON object described above "
-        "and nothing else.\n\n" + "\n".join(blocks)
+        "and nothing else. Extract at most three claims per source, prioritizing claims relevant "
+        "to this subtopic. Keep explanations concise.\n\n" + "\n".join(blocks)
     )
 
 

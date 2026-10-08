@@ -40,6 +40,8 @@ capabilities:
     tool: ${PHEASANT_TOOL_HEALTH:-list_knowledge_bases}
     required: true
   ingest:
+    # Enable this mapping for a region that advertises binary submission:
+    # content_encoding: content_encoding
     tool: ${PHEASANT_TOOL_INGEST:-submit_documents}
     required: true
   ingest_status:

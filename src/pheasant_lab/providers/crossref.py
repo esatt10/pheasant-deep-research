@@ -8,6 +8,7 @@ worth keeping as metadata rather than discarded as empty.
 from __future__ import annotations
 
 import re
+from datetime import date
 from typing import Any
 
 from .base import LiteratureProvider, ProviderError, ProviderRegistry, SourceCandidate
@@ -86,6 +87,14 @@ class CrossrefProvider(LiteratureProvider):
             source_type=TYPE_MAP.get(str(item.get("type")), "journal_article"),
             venue=(item.get("container-title") or [None])[0],
             license=str(licenses[0].get("URL")) if licenses else "unknown",
+            full_text_url=next(
+                (
+                    link.get("URL")
+                    for link in item.get("link") or []
+                    if link.get("content-type") == "application/pdf" and link.get("URL")
+                ),
+                None,
+            ),
             cited_by_count=item.get("is-referenced-by-count"),
             family_key=("affiliation:" + str(affiliations[0])) if affiliations else None,
             raw={"type": item.get("type"), "publisher": item.get("publisher")},
@@ -102,5 +111,13 @@ def _issued(item: dict[str, Any]) -> str | None:
     parts = ((item.get("issued") or {}).get("date-parts") or [[]])[0]
     if not parts:
         return None
-    padded = list(parts) + [1] * (3 - len(parts))
-    return f"{padded[0]:04d}-{padded[1]:02d}-{padded[2]:02d}"
+    if not isinstance(parts, (list, tuple)) or not isinstance(parts[0], int):
+        return None
+    padded = list(parts[:3]) + [1] * max(0, 3 - len(parts))
+    # Crossref also represents unknown dates as [[null]]. An unknown year
+    # stays unknown; absent month/day retain the partial-date convention.
+    padded[1:] = [part if part is not None else 1 for part in padded[1:]]
+    try:
+        return date(*padded).isoformat()
+    except (TypeError, ValueError):
+        return None

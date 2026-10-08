@@ -420,6 +420,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     # web profile whose only web providers lack keys would otherwise collect
     # nothing and report every facet short.
     findings.extend(f"provider {failure}" for failure in provider_failures)
+    if config.collection.full_text_mode and any(p.name != "fixtures" for p in providers) and not (
+        config.pheasant.argument_map.get("ingest") or {}
+    ).get("content_encoding"):
+        findings.append(
+            "original research files require argument_map.ingest.content_encoding; "
+            "the region must advertise this binary submission argument"
+        )
     if not providers:
         findings.append("no literature provider could be constructed")
     else:
@@ -902,6 +909,11 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
                 str(r["artifact_id"]): paths[str(r["idempotency_key"])]
                 for r in receipts
                 if r.get("artifact_id") and str(r.get("idempotency_key")) in paths
+            }
+            session.retriever.source_records = {
+                str(row["source_id"]): row
+                for row in read_jsonl(session.paths.raw_file("sources.jsonl"))
+                if row.get("source_id")
             }
 
         # An evaluation a crash interrupted resumes from the answers it had

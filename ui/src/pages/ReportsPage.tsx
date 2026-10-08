@@ -99,7 +99,7 @@ export function ReportsPage({ view = "reports" }: { view?: "reports" | "traces" 
           {(runs.data ?? []).map((run) => (
             <option key={run.run_id} value={run.run_id}>
               {run.label ? `${run.label} · ` : ""}
-              {run.run_id} · {run.topic_title ?? run.experiment}
+              {run.topic_title ?? run.experiment ?? "Research run"} · {run.created_at ? new Date(run.created_at).toLocaleString() : "date unavailable"}
             </option>
           ))}
         </select>

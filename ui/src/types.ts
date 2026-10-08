@@ -566,8 +566,10 @@ export interface LogInventory {
     size_bytes: number;
     deletable: boolean;
   }[];
-  runs: {
-    run_id: string;
+    runs: {
+      run_id: string;
+      topic_title: string | null;
+      experiment: string | null;
     updated_at: number;
     size_bytes: number;
     categories: Record<string, number>;

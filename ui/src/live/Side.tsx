@@ -1,5 +1,5 @@
 import type { LabEvent, RunModel } from "../types";
-import { ROLE_COLOR, STAGE_LABEL, armColor, stagePill, usd } from "../format";
+import { ARM_DESCRIPTION, ROLE_COLOR, STAGE_LABEL, armColor, stagePill, usd } from "../format";
 import { summarize } from "./summary";
 import { answersDue, type Focus } from "./focus";
 
@@ -33,12 +33,12 @@ export function SwarmTree({
         </div>
       </div>
       <div className="side__scroll" style={{ padding: 6 }}>
-        <button className="tnode" onClick={() => onSelect(null)}>
+        <button className="tnode" onClick={() => onSelect(null)} title="Schedules collection rounds and decides when the stopping conditions are met">
           <span className="sw" style={{ background: ROLE_COLOR.orchestrator }} />
           <span className="name">Orchestrator</span>
           <span className="meta">{model.rounds.length ? `round ${model.rounds.length}` : "planning"}</span>
         </button>
-        <button className="tnode ind1" onClick={() => onSelect(null)}>
+        <button className="tnode ind1" onClick={() => onSelect(null)} title="Divides the topic into research questions and search terms">
           <span className="sw" style={{ background: ROLE_COLOR.planner }} />
           <span className="name">Topic planner</span>
           <span className="meta">{model.subtopics.length ? `✓ ${model.subtopics.length} subtopics` : "—"}</span>
@@ -57,7 +57,7 @@ export function SwarmTree({
             <span className="meta">{agent.acquired} src</span>
           </button>
         ))}
-        <button className="tnode ind1" onClick={() => onSelect(null)}>
+        <button className="tnode ind1" onClick={() => onSelect(null)} title="Checks source coverage, contradictions, and gaps after each collection round">
           <span className="sw" style={{ background: ROLE_COLOR.auditor }} />
           <span className="name">Saturation auditor</span>
           <span className="meta">
@@ -83,6 +83,9 @@ export function SwarmTree({
           </span>
         </button>
       </div>
+      <div className="muted small" style={{ padding: "8px 14px", borderTop: "1px solid var(--border)" }}>
+        Orchestrator schedules rounds; planner defines the questions; researchers find and submit sources; auditor checks coverage and gaps.
+      </div>
       <div style={{ padding: "8px 14px", borderTop: "1px solid var(--border)" }}>
         <div className="eyebrow" style={{ marginBottom: 6 }}>
           Arms {model.questions_total ? `· ${model.questions_total} questions` : "(after freeze)"}
@@ -98,7 +101,7 @@ export function SwarmTree({
               <button
                 key={arm}
                 className={`armbar${on ? " armbar--sel" : ""}`}
-                title={`${row?.label ?? arm}${row ? ` · ${row.answered} answers, ${row.abstained} of them abstentions` : " · not started"} — click to filter to this arm`}
+                title={`${ARM_DESCRIPTION[arm] ?? row?.label ?? arm}${row ? ` · ${row.answered} answers, ${row.abstained} of them abstentions` : " · not started"} — click to filter to this arm`}
                 onClick={() => onFocus(on ? null : { kind: "arm", id: arm })}
                 aria-pressed={on}
               >
@@ -110,6 +113,9 @@ export function SwarmTree({
               </button>
             );
           })}
+        </div>
+        <div className="muted small" style={{ marginTop: 8 }}>
+          {model.run.arms_configured.map((arm) => <div key={arm}><b>{arm}</b> · {ARM_DESCRIPTION[arm] ?? "Configured comparison arm"}</div>)}
         </div>
       </div>
     </div>

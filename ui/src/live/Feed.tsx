@@ -1,5 +1,5 @@
 import { memo, useMemo, useState } from "react";
-import type { LabEvent } from "../types";
+import type { LabEvent, Source } from "../types";
 import type { StreamState } from "../hooks/useRunStream";
 import { FILTERS, summarize, tone } from "./summary";
 import { eventMatches, type Focus } from "./focus";
@@ -25,6 +25,7 @@ const STREAM_LABEL: Record<StreamState, { text: string; className: string }> = {
  */
 export const Feed = memo(function Feed({
   events,
+  sources,
   startedAt,
   stream,
   selected,
@@ -35,6 +36,7 @@ export const Feed = memo(function Feed({
   onCollapse,
 }: {
   events: LabEvent[];
+  sources: Source[];
   startedAt: number | null;
   stream: StreamState;
   selected: number | null;
@@ -52,6 +54,7 @@ export const Feed = memo(function Feed({
     [events, focus, onlyFocus],
   );
   const rows = useMemo(() => scoped.filter(test).slice(-300).reverse(), [scoped, test]);
+  const sourceTitles = useMemo(() => new Map(sources.filter((source) => source.title).map((source) => [source.source_id, source.title!])), [sources]);
   const warnings = useMemo(() => scoped.filter(FILTERS[FILTERS.length - 1].test).length, [scoped]);
   const label = STREAM_LABEL[stream];
   return (
@@ -104,10 +107,10 @@ export const Feed = memo(function Feed({
               <div>
                 <span className="ev__ty">{event.event_type}</span>{" "}
                 <span className="ev__ag">
-                  · {event.arm_id ?? event.agent_id?.replace(/^agent-/, "").replace(/-[0-9a-f]{8}$/, "") ?? event.status}
+                  · {event.arm_id ?? event.agent_role?.replace(/_/g, " ") ?? event.status}
                 </span>
               </div>
-              <div className="ev__sum">{summarize(event)}</div>
+              <div className="ev__sum">{summarize(event, sourceTitles)}</div>
             </div>
           </div>
         ))}

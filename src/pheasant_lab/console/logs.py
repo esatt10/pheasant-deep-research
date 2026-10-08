@@ -164,9 +164,22 @@ class LogControl:
         runs = []
         for run in sorted(self._runs(), key=lambda p: -_mtime(p)):
             categories = _category_sizes(run)
+            manifest_path = run / "run-manifest.json"
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
+            except (OSError, ValueError):
+                manifest = {}
+            wanted = next(iter(manifest.get("topics") or []), None)
+            topic = next(
+                (item for item in (manifest.get("resolved_config") or {}).get("topics") or []
+                 if isinstance(item, dict) and item.get("id") == wanted),
+                {},
+            )
             runs.append(
                 {
                     "run_id": run.name,
+                    "topic_title": topic.get("title"),
+                    "experiment": manifest.get("experiment_name"),
                     "updated_at": _mtime(run),
                     "size_bytes": sum(categories.values()),
                     "categories": categories,

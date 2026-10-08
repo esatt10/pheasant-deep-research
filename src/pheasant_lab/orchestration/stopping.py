@@ -35,6 +35,7 @@ CONDITION_IDS = (
     "facet_minimums",
     "provenance_complete",
     "ingest_receipt_rate",
+    "original_pdf_fraction",
     "critical_contradictions",
     "marginal_yield_saturated",
     "evaluation_reserve_intact",
@@ -125,6 +126,7 @@ class StoppingCalculus:
         topic: Topic,
         *,
         authoritative_types: Iterable[str] = PEER_REVIEWED_TYPES,
+        require_original_pdfs: bool = True,
     ) -> None:
         self.config = config
         self.topic = topic
@@ -132,6 +134,7 @@ class StoppingCalculus:
         # collection profile decides: peer-reviewed for scholarly, primary for
         # web, either for balanced.
         self.authoritative_types = frozenset(authoritative_types)
+        self.require_original_pdfs = require_original_pdfs
 
     # -- the three published formulas --------------------------------------
     def facet_coverage(self, state: CollectionState) -> tuple[float, list[dict[str, Any]]]:
@@ -207,6 +210,12 @@ class StoppingCalculus:
         complete, retained = state.provenance_completeness()
         receipts, submitted = receipt_rate
         rate = receipts / submitted if submitted else 0.0
+        original_pdfs = sum(
+            1 for source in state.sources.values()
+            if source.retained and source.local_artifact_ref
+            and source.local_artifact_ref.lower().endswith(".pdf")
+        )
+        original_fraction = original_pdfs / retained if retained else 0.0
 
         conditions = [
             Condition(
@@ -232,6 +241,15 @@ class StoppingCalculus:
                 numerator=receipts,
                 denominator=submitted,
                 threshold=self.config.minimum_ingest_receipt_rate,
+            ),
+            Condition(
+                "original_pdf_fraction",
+                not self.require_original_pdfs or self.config.minimum_original_pdf_fraction <= 0
+                or (retained > 0 and original_fraction >= self.config.minimum_original_pdf_fraction),
+                f"{original_pdfs}/{retained} retained sources are original PDFs ({original_fraction:.2%})",
+                numerator=original_pdfs,
+                denominator=retained,
+                threshold=self.config.minimum_original_pdf_fraction,
             ),
             Condition(
                 "critical_contradictions",

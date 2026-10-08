@@ -295,8 +295,8 @@ export function LivePage({ onCost }: { onCost: (cost: { spent: number; budget: n
         </span>
         <div style={{ minWidth: 0 }}>
           <h1>{model.run.topic_title ?? model.run.topic_id ?? model.run.run_id}</h1>
-          <div className="mono muted" style={{ fontSize: 11 }}>
-            {model.run.run_id} · cfg {model.run.config_digest?.slice(7, 15)}…
+          <div className="muted" style={{ fontSize: 11 }}>
+            {model.run.experiment ?? "Research run"} · {model.run.created_at ? new Date(model.run.created_at).toLocaleString() : "date unavailable"}
           </div>
         </div>
         <div className="steps">
@@ -356,6 +356,7 @@ export function LivePage({ onCost }: { onCost: (cost: { spent: number; budget: n
       {layout.feed ? (
         <Feed
           events={shownEvents}
+          sources={model.sources}
           startedAt={startedAt}
           stream={stream}
           selected={selected?.sequence ?? null}

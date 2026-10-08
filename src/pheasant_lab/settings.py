@@ -92,6 +92,7 @@ class CollectionSection(_Model):
     require_stable_identifier: bool = True
     permit_abstract_only: bool = True
     download_full_text_only_when_licensed: bool = True
+    full_text_mode: Literal["prefer", "required"] | None = None
     providers: list[str] = Field(
         default_factory=lambda: ["openalex", "crossref", "arxiv", "pubmed"]
     )
@@ -126,6 +127,7 @@ class StoppingSection(_Model):
     marginal_unique_claim_window: int = 3
     marginal_unique_claim_threshold: float = 0.08
     minimum_ingest_receipt_rate: float = 0.98
+    minimum_original_pdf_fraction: float = Field(default=0.0, ge=0.0, le=1.0)
     consecutive_saturated_rounds: int = 2
     evaluation_budget_reserve_fraction: float = 0.40
 
@@ -778,6 +780,13 @@ class LabConfig(_Model):
                 "logging_file",
             ):
                 experiment.pop(field_name, None)
+        # Added after runs already existed. Unset, it is left out - and so is
+        collection = payload.get("collection")
+        if isinstance(collection, dict) and collection.get("full_text_mode") is None:
+            collection.pop("full_text_mode", None)
+            ingest_map = (payload.get("pheasant") or {}).get("argument_map", {}).get("ingest")
+            if isinstance(ingest_map, dict):
+                ingest_map.pop("content_encoding", None)
         # Added after runs already existed. Unset, it is left out - and so is
         # an `expand` mapping, which sends nothing until it is set - so a run
         # started before either existed still resumes without `--fork`.

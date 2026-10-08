@@ -28,6 +28,15 @@ type Pending =
   | { kind: "projection"; id: string }
   | { kind: "apply"; plan: RetentionAction[] };
 
+function runLabel(run: LogInventory["runs"][number]): string {
+  return run.topic_title || run.experiment || `Run on ${new Date(run.updated_at * 1000).toLocaleString()}`;
+}
+
+function runLabelById(data: LogInventory, id: string): string {
+  const run = data.runs.find((item) => item.run_id === id);
+  return run ? runLabel(run) : "this research run";
+}
+
 const CATEGORY_COLOR: Record<string, string> = {
   trace: "var(--r-res)",
   projection: "var(--r-plan)",
@@ -73,15 +82,15 @@ export function LogsPage() {
     if (!pending) return;
     if (pending.kind === "launch") {
       const row = await api.deleteLaunchLog(pending.id);
-      setNotice(`Deleted launch log ${pending.id} · freed ${bytes(row.freed_bytes)}`);
+      setNotice(`Deleted launch log · freed ${bytes(row.freed_bytes)}`);
       if (selection?.kind === "launch" && selection.id === pending.id) setSelection(null);
     } else if (pending.kind === "run") {
       const row = await api.deleteRun(pending.id);
-      setNotice(`Deleted ${pending.id} · freed ${bytes(row.freed_bytes)}`);
+      setNotice(`Deleted research run · freed ${bytes(row.freed_bytes)}`);
       if (selection?.kind === "run" && selection.id === pending.id) setSelection(null);
     } else if (pending.kind === "projection") {
       const row = await api.dropProjection(pending.id);
-      setNotice(`Dropped the projection of ${pending.id} · freed ${bytes(row.freed_bytes)} · \`pheasant-lab replay\` rebuilds it`);
+      setNotice(`Dropped the run projection · freed ${bytes(row.freed_bytes)} · \`pheasant-lab replay\` rebuilds it`);
     } else {
       const result = await api.applyRetention();
       const done = result.applied.filter((row) => !row.skipped);
@@ -154,9 +163,9 @@ export function LogsPage() {
                         </span>
                       </td>
                       <td>
-                        <b>{launch.kind}</b> <span className="muted mono">{launch.launch_id}</span>
+                        <b>{launch.kind.replace(/_/g, " ")} log</b>
                         <div className="muted small">
-                          {launch.run_id ?? "no run"} · {ago(launch.finished_at ?? launch.started_at)}
+                          {data.runs.find((run) => run.run_id === launch.run_id)?.topic_title ?? "No linked run"} · {ago(launch.finished_at ?? launch.started_at)}
                         </div>
                       </td>
                       <td className="mono muted" style={{ textAlign: "right" }}>{bytes(launch.size_bytes)}</td>
@@ -234,7 +243,7 @@ export function LogsPage() {
 
         <div className="logs__viewer">
           {selection ? (
-            <LogViewer selection={selection} onClose={() => setSelection(null)} />
+            <LogViewer selection={selection} label={selection.kind === "run" ? runLabelById(data, selection.id) : "Launch log"} onClose={() => setSelection(null)} />
           ) : (
             <div className="card empty" style={{ height: "100%", display: "grid", placeItems: "center" }}>
               <div>
@@ -262,12 +271,12 @@ export function LogsPage() {
           body={
             pending.kind === "run" ? (
               <>
-                Removes <code>{pending.id}</code> - its raw trace, receipts, benchmark, metrics and reports. It cannot be
+                Removes <strong>{runLabelById(data, pending.id)}</strong> - its raw trace, receipts, benchmark, metrics and reports. It cannot be
                 resumed, replayed or verified afterwards.
               </>
             ) : pending.kind === "projection" ? (
               <>
-                Removes <code>{pending.id}/projections/</code>. The raw trace is untouched; <code>pheasant-lab replay --run {pending.id}</code> rebuilds it.
+                Removes the rebuildable projection for <strong>{runLabelById(data, pending.id)}</strong>. The raw trace remains available for replay.
               </>
             ) : pending.kind === "launch" ? (
               <>Removes the log file and launch record. The run it started, if any, is untouched.</>
@@ -275,14 +284,14 @@ export function LogsPage() {
               <ul style={{ margin: 0, paddingLeft: 18 }}>
                 {pending.plan.map((row) => (
                   <li key={`${row.kind}-${row.target}`}>
-                    <b>{row.kind.replace("_", " ")}</b> <span className="mono">{row.target}</span> - {row.reason}
+                    <b>{row.kind.replace("_", " ")}</b> {data.runs.find((run) => run.run_id === row.target)?.topic_title ?? "research run"} - {row.reason}
                   </li>
                 ))}
               </ul>
             )
           }
           action={pending.kind === "apply" ? "Apply" : pending.kind === "projection" ? "Drop" : "Delete"}
-          confirmText={pending.kind === "run" ? pending.id : undefined}
+          confirmText={pending.kind === "run" ? "DELETE" : undefined}
           onConfirm={confirm}
           onClose={() => setPending(null)}
         />
@@ -318,7 +327,7 @@ function RunRow({
       <div className="logrun__line" onClick={onToggle} role="button" aria-expanded={expanded} tabIndex={0} onKeyDown={(e) => e.key === "Enter" && onToggle()}>
         <span className="wf__caret">{expanded ? "▾" : "▸"}</span>
         <div style={{ minWidth: 0 }}>
-          <div className="mono">{run.run_id}</div>
+          <div title={run.run_id}><b>{runLabel(run)}</b></div>
           <div className="muted small">
             {ago(run.updated_at)}
             {run.live ? <span className="pill pill--info" style={{ marginLeft: 6 }}><span className="spinner" /> running</span> : null}
@@ -391,7 +400,7 @@ function FileButton({
 }) {
   return (
     <button className={`tnode${selected ? " tnode--sel" : ""}`} onClick={() => onOpen(file.path)}>
-      <span className="name mono">{file.path}</span>
+      <span className="name" title={file.path}>{file.path.endsWith("memory-records.jsonl") ? "Seeded memories" : file.path.endsWith("events.jsonl") ? "Activity events" : file.path.endsWith("errors.jsonl") ? "Errors and retries" : file.path}</span>
       <span className="meta">{bytes(file.size_bytes)}</span>
     </button>
   );
@@ -399,7 +408,27 @@ function FileButton({
 
 const PAGE = 400;
 
-function LogViewer({ selection, onClose }: { selection: Selection; onClose: () => void }) {
+function readableLine(raw: string, path: string): { text: string; structured: boolean } {
+  let row: Record<string, any>;
+  try {
+    row = JSON.parse(raw);
+    if (!row || typeof row !== "object" || Array.isArray(row)) return { text: raw, structured: false };
+  } catch {
+    return { text: raw, structured: false };
+  }
+  if (path.endsWith("memory-records.jsonl")) {
+    return {
+      text: `${String(row.scope ?? "org")} memory · ${String(row.subject ?? "Learned fact")} · ${String(row.text ?? "")}`,
+      structured: true,
+    };
+  }
+  const payload = row.payload && typeof row.payload === "object" ? row.payload : {};
+  const action = String(row.event_type ?? row.operation ?? row.stage ?? row.level ?? "Record").replace(/[._]/g, " ");
+  const detail = row.message_redacted ?? row.message ?? payload.title ?? payload.query ?? payload.reason ?? payload.disposition ?? row.status;
+  return { text: detail ? `${action} · ${String(detail)}` : action, structured: true };
+}
+
+function LogViewer({ selection, label, onClose }: { selection: Selection; label: string; onClose: () => void }) {
   const [query, setQuery] = useState("");
   const [debounced, setDebounced] = useState("");
   const [level, setLevel] = useState("");
@@ -409,6 +438,7 @@ function LogViewer({ selection, onClose }: { selection: Selection; onClose: () =
   const [error, setError] = useState<string | null>(null);
   const body = useRef<HTMLDivElement>(null);
   const key = selection.kind === "launch" ? selection.id : `${selection.id}/${selection.path}`;
+  const path = selection.kind === "run" ? selection.path : "launch log";
 
   useEffect(() => {
     const handle = window.setTimeout(() => setDebounced(query), 220);
@@ -465,11 +495,12 @@ function LogViewer({ selection, onClose }: { selection: Selection; onClose: () =
   const rendered = useMemo(
     () =>
       (page?.lines ?? []).map((line) => {
-        const upper = line.text.slice(0, 48).toUpperCase();
+        const view = readableLine(line.text, path);
+        const upper = view.text.slice(0, 48).toUpperCase();
         const tone = /ERROR|CRITICAL|TRACEBACK|REFUSED/.test(upper) ? "danger" : /WARN/.test(upper) ? "warn" : "";
-        if (!needle) return { ...line, tone, parts: [line.text] };
+        if (!needle) return { ...line, tone, structured: view.structured, parts: [view.text] };
         const parts: (string | JSX.Element)[] = [];
-        let rest = line.text;
+        let rest = view.text;
         let index = rest.toLowerCase().indexOf(needle);
         let k = 0;
         while (index >= 0) {
@@ -478,16 +509,16 @@ function LogViewer({ selection, onClose }: { selection: Selection; onClose: () =
           index = rest.toLowerCase().indexOf(needle);
         }
         parts.push(rest);
-        return { ...line, tone, parts };
+        return { ...line, tone, structured: view.structured, parts };
       }),
-    [page, needle],
+    [page, needle, path],
   );
   const first = page?.lines[0]?.n;
 
   return (
     <div className="card logview">
       <div className="card__head">
-        <span className="mono" style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{key}</span>
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{label} · {selection.kind === "run" ? (path.endsWith("memory-records.jsonl") ? "Seeded memories" : path) : "output"}</span>
         <div className="r">
           {page ? <span className="muted small">{page.matched} of {page.total_lines} lines · {bytes(page.size_bytes)}</span> : null}
           <button className="btn btn--ghost btn--small" onClick={onClose} aria-label="Close the viewer" title="Close (Esc)">
@@ -527,7 +558,7 @@ function LogViewer({ selection, onClose }: { selection: Selection; onClose: () =
             {rendered.map((line) => (
               <div key={line.n} className={`logline${line.tone ? ` logline--${line.tone}` : ""}`}>
                 <span className="logline__n">{line.n}</span>
-                <span className="logline__t">{line.parts}</span>
+                <span className="logline__t">{line.parts}{line.structured ? <details><summary className="muted small">Technical record</summary><pre>{line.text}</pre></details> : null}</span>
               </div>
             ))}
             {rendered.length === 0 ? <div className="empty">{debounced || level ? "No line matches the filter." : "This log is empty."}</div> : null}

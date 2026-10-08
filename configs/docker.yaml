@@ -43,10 +43,11 @@ collection:
   allowed_source_types: [journal_article, preprint, review, proceedings]
   require_stable_identifier: true
   permit_abstract_only: true
-  download_full_text_only_when_licensed: true
-  # Abstract collection avoids the MCP request limit for base64 PDF uploads.
-  # Set prefer for licensed PDFs with abstract fallback, or required for PDFs only.
-  full_text_mode: null
+  download_full_text_only_when_licensed: false
+  # Prefer original PDFs at reachable provider URLs; retain an abstract only
+  # when the provider has no PDF or the download fails. The connected region
+  # must advertise submit_documents.content_encoding for binary submissions.
+  full_text_mode: prefer
   providers: [fixtures]
   provider_timeout_seconds: 10
   provider_max_retries: 1
@@ -60,6 +61,7 @@ stopping:
   marginal_unique_claim_window: 2
   marginal_unique_claim_threshold: 0.30
   minimum_ingest_receipt_rate: 0.98
+  minimum_original_pdf_fraction: 0.35
   consecutive_saturated_rounds: 1
   evaluation_budget_reserve_fraction: 0.40
 

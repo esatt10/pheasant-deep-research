@@ -235,6 +235,11 @@ def _fsync_directory(directory: Path) -> None:
 
 
 def durable_write_text(path: Path, text: str) -> None:
+    """Replace a UTF-8 text file atomically and durably."""
+    durable_write_bytes(path, text.encode("utf-8"))
+
+
+def durable_write_bytes(path: Path, content: bytes) -> None:
     """Replace ``path`` atomically and durably.
 
     The temp name is unique to this writer - a fixed ``.partial`` is a
@@ -245,8 +250,8 @@ def durable_write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(f".{path.name}.{os.getpid()}.{ids.new_nonce(4)}.tmp")
     try:
-        with temp.open("w", encoding="utf-8") as handle:
-            handle.write(text)
+        with temp.open("wb") as handle:
+            handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp, path)

@@ -113,7 +113,9 @@ EXPECTED_ARGUMENTS: dict[str, tuple[str, ...]] = {
 # accept - which it does not, because it is not one.
 TOOL_LEVEL_MAP_KEYS: dict[str, frozenset[str] | None] = {
     "search": None,  # every key names a search argument
-    "ingest": frozenset({"documents", "source_name", "submission_id", "agent_id"}),
+    "ingest": frozenset(
+        {"documents", "source_name", "submission_id", "agent_id", "content_encoding"}
+    ),
 }
 
 

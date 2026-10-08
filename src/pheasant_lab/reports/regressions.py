@@ -148,7 +148,7 @@ def write_errors_report(
             lines.append("")
             for error in invalidating:
                 lines.append(
-                    f"- `{error.get('error_id')}` — {error.get('component')}.{error.get('operation')}: "
+                    f"- {error.get('component')}.{error.get('operation')}: "
                     f"{error.get('message_redacted')}"
                 )
             lines.append("")
@@ -163,7 +163,7 @@ def write_errors_report(
         for error in excluded:
             queries = (error.get("impact") or {}).get("affected_queries") or []
             lines.append(
-                f"- `{error.get('error_id')}` ({error.get('stage')}/{error.get('class')}): "
+                f"- {error.get('stage')}/{error.get('class')}: "
                 f"{len(queries)} question(s) affected"
             )
         lines.append("")
@@ -171,12 +171,12 @@ def write_errors_report(
         lines.append("## Every recorded attempt")
         lines.append("")
         lines.append(
-            "| id | stage | class | component | operation | attempt | retryable | resolution |"
+            "| stage | class | component | operation | attempt | retryable | resolution |"
         )
-        lines.append("|---|---|---|---|---|---:|---|---|")
+        lines.append("|---|---|---|---|---:|---|---|")
         for error in errors[:200]:
             lines.append(
-                f"| `{error.get('error_id')}` | {error.get('stage')} | {error.get('class')} | "
+                f"| {error.get('stage')} | {error.get('class')} | "
                 f"{error.get('component')} | {error.get('operation')} | {error.get('attempt')} | "
                 f"{error.get('retryable')} | {error.get('resolution')} |"
             )

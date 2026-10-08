@@ -33,18 +33,25 @@ class Subtopic:
     expect_disagreement: bool = False
     rationale: str = ""
 
-    def queries(self, *, rounds: int) -> list[str]:
+    def queries(self, *, rounds: int, scope: str | None = None) -> list[str]:
         """The query ladder for this subtopic.
 
         Round one is the question's own wording plus the planned terminology;
-        later rounds are single-term probes, which is what surfaces the papers
-        that use one of the field's other names for the same thing.
+        later rounds are single-term probes. With a live topic scope, each
+        probe keeps that domain and the first query uses concise terminology
+        rather than the whole question, which indexes may reject as too long.
         """
 
+        def scoped(text: str) -> str:
+            query = " ".join([scope or "", text]).strip()
+            return query if len(query) <= 200 else query[:201].rsplit(" ", 1)[0]
+
         base = " ".join([self.question, *self.terminology[:3]])
+        if scope:
+            base = scoped(" ".join(self.terminology[:3]) or self.question)
         ladder = [base]
         for term in self.terminology[: max(0, rounds - 1)]:
-            ladder.append(term)
+            ladder.append(scoped(term) if scope else term)
         return ladder[:rounds]
 
     @classmethod
@@ -101,7 +108,11 @@ class Planner:
             role="planner",
             schema="plan",
             system=self.prompt,
-            user=_render(topic, max_subtopics),
+            user=(
+                _render(topic, max_subtopics)
+                + "\nUse only these configured provider identifiers: "
+                + ", ".join(self.config.collection.providers)
+            ),
             context=context,
             max_output_tokens=spec.max_output_tokens,
             temperature=spec.temperature,
