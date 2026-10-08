@@ -375,11 +375,14 @@ class Operations:
         values = {key: values.get(key) for key in keys}
         return self.update_settings(by=by, set_values=values, connection=name)
 
-    def probe_connection(self, name: str | None = None) -> dict[str, Any]:
+    def probe_connection(
+        self, name: str | None = None, *, config: str | None = None
+    ) -> dict[str, Any]:
         """Ask a region about itself (ready, queue, the lab's source) over HTTP."""
 
         draft = self.workspace.get()
-        overrides = dict(draft["overrides"])
+        config_name = config or draft["config"]
+        overrides = dict(draft["overrides"]) if config_name == draft["config"] else {}
         if name:
             from .state import override_text
 
@@ -388,9 +391,9 @@ class Operations:
                     overrides.pop(key, None)
                 else:
                     overrides[key] = override_text(value)
-        pheasant = self.console.resolve(
-            draft["config"], [f"{k}={v}" for k, v in overrides.items()]
-        )["pheasant"]
+        pheasant = self.console.resolve(config_name, [f"{k}={v}" for k, v in overrides.items()])[
+            "pheasant"
+        ]
         return probe_region(
             pheasant,
             token_env=pheasant.get("token_env") or "PHEASANT_API_TOKEN",

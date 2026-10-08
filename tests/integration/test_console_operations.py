@@ -116,6 +116,30 @@ def _tool(base: str, tool_name: str, **arguments):
 # -- settings ------------------------------------------------------------------
 
 
+def test_region_badge_probes_the_saved_connection(console, monkeypatch) -> None:
+    base, _ = console
+    probed = []
+
+    def probe(pheasant, **kwargs):
+        probed.append(pheasant)
+        return {"base_url": pheasant["url"], "reachable": True, "notices": []}
+
+    monkeypatch.setattr("pheasant_lab.console.operations.probe_region", probe)
+    status, updated = _call(
+        f"{base}/api/settings",
+        method="PUT",
+        body={
+            "set": {"transport": "streamable_http", "url": "http://host.docker.internal:8765/mcp"}
+        },
+    )
+    assert status == 200 and updated["valid"]
+    for suffix in ("", "?config=configs/demo.yaml"):
+        status, result = _call(f"{base}/api/region{suffix}")
+        assert status == 200
+        assert result["base_url"] == "http://host.docker.internal:8765/mcp"
+    assert len(probed) == 2
+
+
 def test_a_setting_changed_over_mcp_is_the_one_the_browser_reads(console) -> None:
     base, _ = console
     result, body = _tool(base, "lab_update_settings", set={"collection.max_research_agents": 4})

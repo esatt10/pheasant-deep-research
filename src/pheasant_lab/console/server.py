@@ -36,7 +36,6 @@ from .launcher import Launch, Launcher
 from .logs import LogControl
 from .mcp import handle_jsonrpc, mcp_info
 from .projection import RunWatcher, fold_until, in_scope
-from .region import probe_region
 from .state import Connections, Prices, RunLabels, Secrets, Workspace
 from .topics import add_topic, topic_rows
 from .traces import RunTraces
@@ -389,15 +388,7 @@ def make_handler(console: Console) -> type[BaseHTTPRequestHandler]:
                         )
                     )
                 if route == ["region"]:
-                    config = query.get("config") or console.default_config
-                    pheasant = console.resolve(config, [])["pheasant"]
-                    return self._json(
-                        probe_region(
-                            pheasant,
-                            token_env=pheasant.get("token_env") or "PHEASANT_API_TOKEN",
-                            environ=console.environment(),
-                        )
-                    )
+                    return self._json(console.ops.probe_connection(config=query.get("config")))
                 return self._error(HTTPStatus.NOT_FOUND, f"no route {url.path}")
             except KeyError as exc:
                 return self._error(HTTPStatus.NOT_FOUND, f"unknown: {exc}")
